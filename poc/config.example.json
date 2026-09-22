@@ -1,0 +1,8 @@
+{
+  "_schema": "GENGHIS system config — HUMAN-set settings (vs fleet.json = measured node state). Edited via POST /config (the web admin) or `genghis init`. Keys: default_goal, model, names{id:friendly}, roles{id:role}, hearth{}. THIS IS AN EXAMPLE; the real config.json is generated for your machine and is git-ignored.",
+  "default_goal": "fastest",
+  "model": null,
+  "names": {},
+  "roles": {},
+  "hearth": {}
+}

@@ -1,0 +1,21 @@
+{
+  "run_id": "2026-09-02T02-48-35_naive",
+  "strategy": "naive",
+  "assignments": [
+    {
+      "donor": "pi5-8gb",
+      "share": 0.284,
+      "weighted_by": "memory/MB"
+    },
+    {
+      "donor": "tegra-x1",
+      "share": 0.14,
+      "weighted_by": "memory/MB"
+    },
+    {
+      "donor": "gpu-5060ti",
+      "share": 0.576,
+      "weighted_by": "memory/MB"
+    }
+  ]
+}

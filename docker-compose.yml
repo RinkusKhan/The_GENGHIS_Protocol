@@ -1,0 +1,111 @@
+# GENGHIS — the OPTIONAL "nice UI" tier: chat window (Open WebUI) + fleet dashboards (Prometheus + Grafana).
+# The CORE fabric (coordinator + /v1 serve) is pure Python + llama.cpp and needs NONE of this — Docker is
+# a convenience layer, not a dependency (D21). If Docker melts down, the fabric keeps serving; you just lose
+# the browser UI until it's back.
+#
+#   docker compose up -d        # start the UI tier   (project name is pinned to "genghis" below)
+#   docker compose down         # stop + remove it CLEANLY — no orphans, because everything is one project
+#   docker compose ps           # what GENGHIS is running
+#   docker ps --filter label=com.genghis.project=genghis        # every GENGHIS container, anywhere, by label
+#
+# D21: ONE named, labelled project. Every container carries com.genghis.* labels and lives under the
+# "genghis" compose project, so on ANY machine you can always answer "what did GENGHIS create?" and tear it
+# ALL down with one command. NEVER `docker run` these by hand — a bare run makes an unlabelled, randomly
+# named orphan that nothing can cleanly reclaim (that is exactly the stray-container mess D21 ends).
+# Image tags are PINNED (D18) — bump deliberately here, never :latest.
+
+name: genghis   # pins the Compose project name -> the com.docker.compose.project label + our com.genghis.* labels
+
+# Applied to every service so the whole tier is identifiable and reclaimable by one label selector.
+x-genghis-labels: &genghis-labels
+  com.genghis.project: "genghis"
+  com.genghis.tier: "ui"
+  com.genghis.managed: "true"
+
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:v0.11.3   # pinned (D18)
+    container_name: open-webui
+    labels:
+      <<: *genghis-labels
+      com.genghis.role: "chat-ui"
+    ports: ["3080:8080"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # reach the laptop's /v1 serve from inside the container (portable to Linux)
+    environment:
+      # Point the chat UI at the GENGHIS /v1 endpoint (the laptop coordinator by default).
+      - OPENAI_API_BASE_URL=http://host.docker.internal:8899/v1
+      - OPENAI_API_KEY=none
+      - WEBUI_AUTH=False
+      - WEBUI_NAME=GENGHIS                  # D24: brand the chat window (title, tab, sidebar) as GENGHIS
+      - ENABLE_OLLAMA_API=False            # GENGHIS is the only backend; no bundled Ollama probing
+      # D47: the image is PINNED above, so the chat UI's own "a new version is available -- Update" banner
+      # offers a button that cannot do anything here. A control that does nothing is worse than no control:
+      # turn the check off, and move the pin deliberately with `integrations/openwebui/upgrade.sh` instead.
+      - ENABLE_VERSION_UPDATE_CHECK=False
+      # DuckDuckGo web search, no embedding/retrieval round-trip. NOTE: these are DEFAULTS for a fresh
+      # database only -- Open WebUI persists its settings in its DB and the DB wins afterwards (a copied
+      # volume had web.search.enable=false and no engine; the toggle simply never appeared). If Web Search
+      # is missing from the chat's + menu: Admin Panel -> Settings -> Web Search -> enable + DuckDuckGo.
+      - ENABLE_WEB_SEARCH=True
+      - WEB_SEARCH_ENGINE=duckduckgo
+      - WEB_SEARCH_RESULT_COUNT=3
+      - BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL=True
+      # Telemetry off.
+      - SCARF_NO_ANALYTICS=true
+      - DO_NOT_TRACK=true
+      - ANONYMIZED_TELEMETRY=false
+    volumes:
+      - open-webui:/app/backend/data
+      # D24 branding: overlay the GENGHIS mark onto Open WebUI's static icons (single-file binds, so the
+      # rest of its static assets are untouched). Persist across `compose up` recreates.
+      - ./branding/favicon.png:/app/backend/open_webui/static/favicon.png:ro
+      - ./branding/favicon.svg:/app/backend/open_webui/static/favicon.svg:ro
+      - ./branding/favicon-96x96.png:/app/backend/open_webui/static/favicon-96x96.png:ro
+      - ./branding/apple-touch-icon.png:/app/backend/open_webui/static/apple-touch-icon.png:ro
+      - ./branding/logo.png:/app/backend/open_webui/static/logo.png:ro
+      - ./branding/splash.png:/app/backend/open_webui/static/splash.png:ro
+      - ./branding/splash-dark.png:/app/backend/open_webui/static/splash-dark.png:ro
+      - ./branding/web-app-manifest-192x192.png:/app/backend/open_webui/static/web-app-manifest-192x192.png:ro
+      - ./branding/web-app-manifest-512x512.png:/app/backend/open_webui/static/web-app-manifest-512x512.png:ro
+      # GENGHIS themes (integrations/openwebui/themes): Open WebUI links /static/custom.css and runs the (shipped-empty)
+      # /static/loader.js on every page -- its official hooks. Pick a theme at http://<ui>:3080/static/genghis-themes.html
+      - ./integrations/openwebui/themes/custom.css:/app/backend/open_webui/static/custom.css:ro   # hard-refresh once after editing (browser cache)
+      - ./integrations/openwebui/themes/loader.js:/app/backend/open_webui/static/loader.js:ro
+      - ./integrations/openwebui/themes/genghis-themes.html:/app/backend/open_webui/static/genghis-themes.html:ro
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.14.0   # pinned (D18)
+    container_name: genghis-prometheus
+    labels:
+      <<: *genghis-labels
+      com.genghis.role: "metrics"
+    ports: ["9090:9090"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.1   # pinned (D18)
+    container_name: genghis-grafana
+    labels:
+      <<: *genghis-labels
+      com.genghis.role: "dashboards"
+    ports: ["3000:3000"]
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana-dashboard.json:/var/lib/grafana/dashboards/genghis-dashboard.json:ro
+    depends_on: [prometheus]
+    restart: unless-stopped
+
+volumes:
+  # Pre-existing named volume (Open WebUI chats/settings) — declared external so `compose down -v` on a
+  # fresh setup won't nuke a user's history by surprise, and so this adopts the volume already on disk.
+  open-webui:
+    external: true

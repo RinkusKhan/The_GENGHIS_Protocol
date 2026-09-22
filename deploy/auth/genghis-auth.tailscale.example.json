@@ -1,0 +1,14 @@
+{
+  "_comment": "D25 + the Tailscale front door — the auth block to MERGE into the coordinator config once `tailscale serve` is proxying :8899. Apply it with the POST /config call in README.md. Until then GENGHIS stays in LOCAL mode (direct-LAN = admin), unchanged. Do NOT set proxy_secret before `serve` is live, or you will drop your own local access to viewer. `tailscale serve` injects Tailscale-User-Login (the signed-in tailnet user); it sends no groups, so map people by address. NOTE: `tailscale funnel` (public) injects NO identity — use the Cloudflare option for a public front door.",
+  "auth": {
+    "user_header": "Tailscale-User-Login",
+    "groups_header": "",
+    "roles_by_user": {
+      "you@example.com": "admin",
+      "someone-else@example.com": "operator"
+    },
+    "roles_by_group": {},
+    "default_role": "viewer",
+    "proxy_secret": "CHANGE-ME-to-a-long-random-string"
+  }
+}

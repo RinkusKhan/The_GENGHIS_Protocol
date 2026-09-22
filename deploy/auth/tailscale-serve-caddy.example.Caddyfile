@@ -1,0 +1,48 @@
+# GENGHIS — identity → ROLES behind `tailscale serve` (D25).  VERIFIED 2026-09-22 on the reference fleet.
+#
+# WHY THIS FILE EXISTS
+# `tailscale serve` authenticates the visitor and injects their identity:
+#     Tailscale-User-Login: you@example.com
+#     Tailscale-User-Name:  Your Name
+#     X-Forwarded-For:      100.x.y.z        (the visitor's tailnet address)
+# — but it CANNOT add a header of your own, and it proxies to GENGHIS from 127.0.0.1, so "it came from the
+# tailnet" is invisible to the coordinator. D25 therefore cannot arm proxy mode from Serve alone: with
+# `proxy_secret` empty GENGHIS stays in LOCAL mode and every caller gets `local_role` (admin) — measured, not
+# assumed. Anything that can reach 127.0.0.1:8899 could also forge the identity header.
+#
+# This one-hop proxy closes that: Serve → Caddy (adds the shared secret) → GENGHIS. Then `proxy_secret` works
+# exactly as it does behind Cloudflare Access, and roles are enforced per user.
+#
+#   SINGLE-USER TAILNET? You do not need this. Every device on your tailnet is yours; Serve straight to :8899 is
+#   a strictly better front door than the raw IP (HTTPS + a real name) and admin-for-you is the correct answer.
+#
+# USE
+#   1. sudo apt install caddy                     (or: docker run caddy)
+#   2. put this file at /etc/caddy/Caddyfile, edit the secret
+#   3. sudo systemctl restart caddy
+#   4. sudo tailscale serve --bg --https=443 http://127.0.0.1:8890     # Serve now points at Caddy, not GENGHIS
+#   5. merge deploy/auth/genghis-auth.tailscale.example.json into the coordinator config, with the SAME secret
+#      and your roles_by_user — see deploy/auth/README.md for the POST /config call.
+#   6. check: curl -s https://<your-host>.<tailnet>.ts.net/whoami   → your address + the role you mapped
+#      and:   curl -s http://<lan-ip>:8899/whoami                   → role `viewer` (a direct hit is untrusted now)
+#
+# ORDER MATTERS (step 5 last): arming proxy_secret before the hop is live demotes your own LAN access.
+
+:8890 {
+	# Bind to loopback only — nothing outside this box may reach Caddy directly.
+	bind 127.0.0.1
+
+	reverse_proxy 127.0.0.1:8899 {
+		# The shared secret GENGHIS checks (auth.proxy_secret). Anything that does not come through here
+		# cannot set it, so a forged identity header on the LAN is rejected.
+		header_up X-Genghis-Proxy "CHANGE-ME-to-a-long-random-string"
+
+		# Pass Tailscale's identity through unchanged (Caddy forwards unknown headers already; explicit is
+		# clearer, and documents exactly which header GENGHIS is configured to read).
+		header_up Tailscale-User-Login {http.request.header.Tailscale-User-Login}
+
+		# Strip anything a client tried to inject that only the proxy may set.
+		header_up -X-Auth-Request-User
+		header_up -X-Auth-Request-Groups
+	}
+}

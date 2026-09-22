@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GENGHIS themes</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 32px 20px; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: #111; color: #e8e8e8; }
+  h1 { font-weight: 600; letter-spacing: .02em; margin: 0 0 4px; }
+  p.sub { color: #9a9a9a; margin: 0 0 24px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; max-width: 980px; }
+  .card { border-radius: 14px; padding: 16px; cursor: pointer; border: 2px solid transparent; transition: transform .12s, border-color .12s; }
+  .card:hover { transform: translateY(-2px); }
+  .card.active { border-color: #fff; }
+  .name { font-weight: 600; font-size: 17px; }
+  .note { opacity: .75; font-size: 13px; margin-top: 2px; }
+  .chips { display: flex; gap: 6px; margin-top: 12px; }
+  .chip { width: 22px; height: 22px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); }
+  .actions { margin-top: 26px; display: flex; gap: 10px; flex-wrap: wrap; }
+  button { font: inherit; padding: 9px 14px; border-radius: 10px; border: 1px solid #444; background: #1c1c1c; color: #eee; cursor: pointer; }
+  button.primary { background: #e8e8e8; color: #111; border-color: #e8e8e8; }
+  small { color: #777; display: block; margin-top: 18px; }
+</style>
+</head>
+<body>
+  <h1>GENGHIS themes</h1>
+  <p class="sub">Pick one — it applies to this browser only. Open WebUI's own Theme (Settings → Interface) should be <b>Dark</b>.</p>
+  <div class="grid" id="grid"></div>
+  <div class="actions">
+    <button class="primary" onclick="location.href='/'">Back to chat</button>
+    <button onclick="pick('')">Stock Open WebUI look</button>
+  </div>
+  <small>Themes re-tint the interface's gray ramp and add one accent; contrast is preserved. Nine ship with GENGHIS (six near-black, two mid-tone, one 60/30/10); add your own in gen_themes.py.</small>
+<script>
+  // name, label, note, [surface, panel, text, accent]
+  const THEMES = [
+    ["khan",      "Khan",         "gold on black — the house colours",         ["#101010", "#232323", "#f0eee8", "#e2b23c"]],
+    ["blackwell", "Blackwell",    "graphite with lime highlights",             ["#161616", "#2a2a2a", "#ececec", "#8ee03c"]],
+    ["rizen",     "Rizen' Up",    "dark plum with a signal-red edge",          ["#17151d", "#26232f", "#ecebf2", "#ff2d55"]],
+    ["arc",       "Arc Light",    "deep teal with cyan",                       ["#0f1f28", "#173241", "#dfeaf0", "#2fd6cc"]],
+    ["steppe",    "Steppe Night", "slate blue with lavender",                  ["#181a26", "#262a3a", "#e6e7f2", "#b7bdf8"]],
+    ["overclock", "Overclock",    "crimson, electric yellow, cyan — for the brave", ["#3a0a1c", "#5a1030", "#ffe1ea", "#ffe600"]],
+    ["tundra",    "Tundra",       "slate blue-gray, steel-blue controls, a gold note (mid-tone)", ["#27333f", "#34434f", "#e7edf3", "#6fb0e6"]],
+    ["foundry",   "Foundry",      "mid graphite, sky-blue controls, a warm-red note (mid-tone)",  ["#33373c", "#41464c", "#ececec", "#4fb2ee"]],
+    ["ordu",      "Ordu",         "60/30/10 — warm charcoal, cool blue panels, one ember · the default", ["#1c1916", "#262b36", "#ede8e0", "#e39a4a"]],
+  ];
+  const stored = localStorage.getItem("genghisTheme"); const cur = stored === null ? "ordu" : (stored === "none" ? "" : stored);
+  const grid = document.getElementById("grid");
+  for (const [key, label, note, c] of THEMES) {
+    const d = document.createElement("div");
+    d.className = "card" + (cur === key ? " active" : "");
+    d.style.background = c[1]; d.style.color = c[2];
+    d.innerHTML = `<div class="name">${label}</div><div class="note">${note}</div>
+      <div class="chips">${c.map(x => `<span class="chip" style="background:${x}"></span>`).join("")}</div>`;
+    d.onclick = () => pick(key);
+    grid.appendChild(d);
+  }
+  function pick(key) {
+    localStorage.setItem("genghisTheme", key || "none");
+    location.href = "/";
+  }
+</script>
+</body>
+</html>

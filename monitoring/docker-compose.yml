@@ -1,0 +1,10 @@
+# SUPERSEDED (D21) — the monitoring stack is now part of the ONE unified "genghis" compose project
+# at the repository root, alongside Open WebUI, so the whole UI tier shares labels and tears down as a unit.
+#
+#   cd ..            # repo root
+#   docker compose up -d      # starts prometheus + grafana + open-webui, project name "genghis"
+#   docker compose down       # clean teardown of the whole tier
+#
+# The prometheus.yml / grafana/ assets in this folder are still used — the root compose references them.
+# This file is intentionally left as a pointer so old muscle-memory (`cd monitoring && docker compose up`)
+# fails loudly instead of starting a SECOND, differently-named project.

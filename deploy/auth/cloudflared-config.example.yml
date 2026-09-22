@@ -1,0 +1,30 @@
+# GENGHIS — cloudflared tunnel config (D25 slice 3).
+# Runs on the SAME host as the coordinator. cloudflared dials OUT to Cloudflare — no inbound ports, your
+# home IP is never exposed. Cloudflare Access (configured in the Zero Trust dashboard) authenticates every
+# request against your IdP BEFORE it reaches this tunnel, and forwards the verified identity header
+# (Cf-Access-Authenticated-User-Email) which GENGHIS maps to a role.
+#
+# Install: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/  then:
+#   cloudflared tunnel login
+#   cloudflared tunnel create genghis          # -> prints a TUNNEL_ID + writes a credentials json
+#   cloudflared tunnel route dns genghis genghis.example.com
+#   cloudflared tunnel route dns genghis chat.example.com
+#   cloudflared tunnel route dns genghis grafana.example.com
+#   cloudflared --config ./cloudflared-config.yml tunnel run
+# (or install it as a service: cloudflared service install)
+
+tunnel: REPLACE-WITH-YOUR-TUNNEL-ID
+credentials-file: /root/.cloudflared/REPLACE-WITH-YOUR-TUNNEL-ID.json
+
+ingress:
+  # The GENGHIS Control Room + API + /v1 (the coordinator, on the host).
+  - hostname: genghis.example.com
+    service: http://localhost:8899
+  # The chat window (Open WebUI container, published on the host at :3080).
+  - hostname: chat.example.com
+    service: http://localhost:3080
+  # Grafana dashboards.
+  - hostname: grafana.example.com
+    service: http://localhost:3000
+  # Everything else -> 404 (required catch-all).
+  - service: http_status:404

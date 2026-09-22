@@ -1,0 +1,678 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GENGHIS Control Room</title>
+<style>
+  :root{
+    --bg:#EEF1F5; --panel:#FFFFFF; --panel-2:#F4F7FA; --line:#D7DEE6;
+    --text:#18202A; --muted:#586878; --faint:#8494A4;
+    --ember:#B96E10; --ember-soft:#F3E4CC; --steel:#2A6FB0; --steel-soft:#E1EDF8;
+    --ok:#2E9E58; --amber:#C98A16; --red:#C0392B; --cyan:#1E8FA8; --magenta:#8E44AD;
+    --shadow:0 1px 2px rgba(20,30,45,.06),0 6px 20px rgba(20,30,45,.06);
+    --sans:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+    --bg:#0C1016; --panel:#141A22; --panel-2:#0F151D; --line:#242E3A;
+    --text:#E6EDF3; --muted:#93A1B0; --faint:#657686;
+    --ember:#E8A33D; --ember-soft:#2A2013; --steel:#6BB4EE; --steel-soft:#132234;
+    --ok:#56D07E; --amber:#E8A33D; --red:#F0736A; --cyan:#57C3DC; --magenta:#C08BE0;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 26px rgba(0,0,0,.34);
+  }}
+  :root[data-theme="dark"]{
+    --bg:#0C1016; --panel:#141A22; --panel-2:#0F151D; --line:#242E3A;
+    --text:#E6EDF3; --muted:#93A1B0; --faint:#657686;
+    --ember:#E8A33D; --ember-soft:#2A2013; --steel:#6BB4EE; --steel-soft:#132234;
+    --ok:#56D07E; --amber:#E8A33D; --red:#F0736A; --cyan:#57C3DC; --magenta:#C08BE0;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 26px rgba(0,0,0,.34);
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.5;margin:0;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto;padding:28px 20px 60px}
+  a{color:var(--steel);text-decoration:none}
+  header.head{border:1px solid var(--line);border-radius:14px;background:linear-gradient(180deg,var(--panel),var(--panel-2));box-shadow:var(--shadow);padding:22px 26px}
+  .eyebrow{font-family:var(--mono);font-size:11.5px;letter-spacing:.22em;text-transform:uppercase;color:var(--ember);display:flex;align-items:center;gap:9px;margin-bottom:10px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--faint)}
+  .dot.live{background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 22%,transparent)}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:-.01em}
+  .lede{color:var(--muted);font-size:15px;margin:0}
+  .stat-row{display:flex;flex-wrap:wrap;gap:22px;margin-top:16px;align-items:flex-end}   /* labels share one baseline whatever the value's height */
+  .stat{display:flex;flex-direction:column;justify-content:flex-end}
+  .stat .v{font-family:var(--mono);font-size:20px;font-weight:600;color:var(--text);line-height:1.2}
+  #s-model{font-size:15px;line-height:1.6;max-width:min(60ch,100%)}
+  .stat .k{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);margin-top:2px}
+  .sect-label{font-family:var(--mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--faint);margin:30px 2px 12px;display:flex;align-items:center;gap:10px}
+  .sect-label::after{content:"";flex:1;height:1px;background:var(--line)}
+  .card{border:1px solid var(--line);border-radius:12px;background:var(--panel);box-shadow:var(--shadow)}
+  table{width:100%;border-collapse:collapse}
+  th{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);font-weight:600}
+  td{padding:11px 14px;font-size:13.5px;border-bottom:1px solid var(--line);vertical-align:middle}
+  tr:last-child td{border-bottom:none}
+  .name{font-weight:600}
+  .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .badge{display:inline-block;font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.06em;padding:3px 8px;border-radius:5px;border:1px solid var(--line);white-space:nowrap}
+  .b-IN{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,var(--line));background:color-mix(in srgb,var(--ok) 10%,transparent)}
+  .b-IDLE{color:var(--amber);border-color:color-mix(in srgb,var(--amber) 40%,var(--line));background:color-mix(in srgb,var(--amber) 10%,transparent)}
+  .b-FOREIGN{color:var(--faint);border-style:dashed}
+  .b-HELD{color:var(--faint);border-style:dotted}
+  .b-PINNED{color:var(--ember);border-color:color-mix(in srgb,var(--ember) 45%,var(--line));background:var(--ember-soft)}   /* holding a shard of a pooled warm model (D39) */
+  .b-AWAY{color:var(--faint);border-style:dashed;opacity:.8}
+  .b-DOWN{color:var(--red);border-color:color-mix(in srgb,var(--red) 40%,var(--line));background:color-mix(in srgb,var(--red) 10%,transparent)}
+  .b-STORE{color:var(--cyan);border-color:color-mix(in srgb,var(--cyan) 40%,var(--line));background:color-mix(in srgb,var(--cyan) 10%,transparent)}
+  .b-SURF{color:var(--magenta);border-color:color-mix(in srgb,var(--magenta) 40%,var(--line));background:color-mix(in srgb,var(--magenta) 10%,transparent)}
+  .b-warm{color:var(--ember);border-color:color-mix(in srgb,var(--ember) 45%,var(--line));background:var(--ember-soft)}
+  .b-vlm{color:var(--steel);border-color:color-mix(in srgb,var(--steel) 40%,var(--line));background:var(--steel-soft)}
+  select{font-family:var(--mono);font-size:12.5px;color:var(--text);background:var(--panel-2);border:1px solid var(--line);border-radius:7px;padding:6px 9px;max-width:340px}
+  select:hover{border-color:var(--steel)}
+  .btn{font-family:var(--mono);font-size:11px;font-weight:600;color:var(--steel);background:var(--panel-2);border:1px solid var(--line);border-radius:6px;padding:4px 9px;cursor:pointer;transition:border-color .12s,color .12s}
+  .btn:hover{border-color:var(--steel)}
+  .btn:disabled{opacity:.5;cursor:default}
+  .goal{font-family:var(--mono);font-weight:600;text-transform:uppercase;font-size:12px;letter-spacing:.08em}
+  .res-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
+  .res{border:1px solid var(--line);border-radius:12px;background:var(--panel);box-shadow:var(--shadow);padding:15px 16px;display:flex;flex-direction:column;gap:2px;transition:transform .12s,border-color .12s;position:relative}
+  .res:hover{transform:translateY(-2px);border-color:color-mix(in srgb,var(--steel) 45%,var(--line))}
+  .res .glyph{width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-weight:700;font-size:15px;margin-bottom:8px;border:1px solid var(--line)}
+  .glyph.ember{background:var(--ember-soft);color:var(--ember);border-color:color-mix(in srgb,var(--ember) 35%,var(--line))}
+  .glyph.steel{background:var(--steel-soft);color:var(--steel);border-color:color-mix(in srgb,var(--steel) 35%,var(--line))}
+  .res .rt{font-weight:600;font-size:15px;color:var(--text);display:flex;align-items:center;gap:8px}
+  .res .rd{color:var(--muted);font-size:12.5px;line-height:1.4;margin:2px 0 8px}
+  .res .ru{font-family:var(--mono);font-size:11.5px;color:var(--steel);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .rdot{width:8px;height:8px;border-radius:50%;background:var(--faint);flex:none}
+  .rdot.up{background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 20%,transparent)}
+  .rdot.down{background:var(--red)}
+  .rstat{font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);position:absolute;top:15px;right:16px}
+  .foot{display:flex;flex-wrap:wrap;gap:12px;margin-top:26px}
+  .link{border:1px solid var(--line);border-radius:10px;background:var(--panel);box-shadow:var(--shadow);padding:12px 16px;display:flex;flex-direction:column;min-width:150px;transition:transform .12s,border-color .12s}
+  .link:hover{transform:translateY(-1px);border-color:color-mix(in srgb,var(--steel) 40%,var(--line))}
+  .link .t{font-weight:600;font-size:14px;color:var(--text)}
+  .link .u{font-family:var(--mono);font-size:11.5px;color:var(--steel);margin-top:3px}
+  .note{color:var(--faint);font-size:12px;margin:8px 2px 0;font-family:var(--mono)}
+  /* ---- The Pool (D39): the fleet's memory as bars; models as blocks you drop on them ---- */
+  .pool-wrap{display:grid;grid-template-columns:minmax(200px,260px) 1fr;gap:14px;align-items:start}
+  @media (max-width:760px){.pool-wrap{grid-template-columns:1fr}}
+  .shelf{border:1px solid var(--line);border-radius:12px;background:var(--panel);box-shadow:var(--shadow);padding:12px}
+  .shelf .sh{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);margin:0 2px 8px}
+  .blk{display:flex;align-items:center;justify-content:space-between;gap:8px;border:1px solid color-mix(in srgb,var(--ember) 45%,var(--line));
+       background:var(--ember-soft);color:var(--text);border-radius:8px;padding:7px 10px;margin-bottom:6px;cursor:grab;user-select:none;font-size:12.5px}
+  .blk .bn{font-weight:600;font-family:var(--mono);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .blk .bs{font-family:var(--mono);font-size:11px;color:var(--muted);flex:none}
+  .blk.placing{outline:2px solid var(--ember);outline-offset:2px}
+  .blk.warm{opacity:.55;cursor:default}
+  .pool{border:1px solid var(--line);border-radius:12px;background:var(--panel);box-shadow:var(--shadow);padding:12px 14px;position:relative}
+  .pool.over{border-color:var(--ember);box-shadow:0 0 0 3px color-mix(in srgb,var(--ember) 25%,transparent)}
+  .pool .ph{display:flex;justify-content:space-between;align-items:baseline;margin:0 2px 10px}
+  .pool .ph .t{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
+  .pool .ph .tot{font-family:var(--mono);font-size:12px;color:var(--muted)}
+  /* D39 formations: named warm layouts, one action */
+  .forms{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 2px 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+  .forms .fl{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);margin-right:4px}
+  .chip{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11.5px;padding:4px 9px;border:1px solid var(--line);border-radius:999px;background:var(--panel-2);color:var(--text);cursor:pointer;user-select:none}
+  .chip:hover{border-color:var(--steel)}
+  .chip.cur{border-color:var(--ok);color:var(--ok)} .chip.cur::before{content:"●";font-size:9px}
+  .chip.busy{border-color:var(--amber);color:var(--amber);cursor:progress}
+  .chip .x{color:var(--faint);font-size:12px;margin-left:2px;padding:0 2px;border-radius:4px} .chip .x:hover{color:var(--red);background:color-mix(in srgb,var(--red) 15%,transparent)}
+  .chip.add{border-style:dashed;color:var(--muted)} .chip.add:hover{color:var(--text)}
+  /* D39 pass 2: the bracket -- every piece of a pooled model shares an accent; a spine in the gutter ties them */
+  .seg.pooled{box-shadow:inset 4px 0 0 var(--acc)}
+  #bars{position:relative}
+  #brackets{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;overflow:visible}
+  .blegend{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin:2px 2px 0} .blegend b{color:var(--acc);font-weight:600}
+  .bar{display:grid;grid-template-columns:150px 1fr;gap:10px;align-items:center;margin:0 0 7px}
+  .bar .lbl{font-family:var(--mono);font-size:11.5px;line-height:1.25}
+  .bar .lbl .n{font-weight:600;color:var(--text)}
+  .bar .lbl .f{color:var(--muted);font-size:10.5px}
+  .bar .trk{position:relative;height:26px;border-radius:6px;background:var(--panel-2);border:1px solid var(--line);overflow:hidden}
+  .bar.over .trk{border-color:var(--ember)}
+  .bar.busy .trk{border-style:dashed}
+  .seg{position:absolute;top:0;bottom:0;display:flex;align-items:center;padding:0 6px;font-family:var(--mono);font-size:10px;font-weight:600;white-space:nowrap;overflow:hidden}
+  .seg.used{background:color-mix(in srgb,var(--steel) 55%,var(--panel-2));color:var(--text);border-right:1px solid var(--panel)}
+  .seg.pin{background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--ember) 45%,var(--panel-2)) 0 6px,color-mix(in srgb,var(--ember) 25%,var(--panel-2)) 6px 12px);color:var(--text)}
+  .seg.ghost{background:color-mix(in srgb,var(--ok) 45%,transparent);border:1px dashed var(--ok);color:var(--text);opacity:.9}
+  .seg.ghost.no{background:color-mix(in srgb,var(--red) 40%,transparent);border-color:var(--red)}
+  .seg.ghost.warn{background:color-mix(in srgb,var(--amber) 40%,transparent);border-color:var(--amber)}   /* D41: fits, but by reaching */
+  .seg.load{background:linear-gradient(90deg,color-mix(in srgb,var(--ember) 70%,var(--panel-2)),color-mix(in srgb,var(--ember) 35%,var(--panel-2)));color:var(--text);
+            background-size:200% 100%;animation:sweep 1.4s linear infinite}
+  @keyframes sweep{from{background-position:200% 0}to{background-position:-200% 0}}
+  .fabric-drop{margin-top:8px;border:1px dashed var(--line);border-radius:8px;padding:8px 10px;font-family:var(--mono);font-size:11.5px;color:var(--muted);text-align:center}
+  .fabric-drop.over{border-color:var(--ember);color:var(--text);background:var(--ember-soft)}
+  .pverdict{margin:8px 2px 0;font-family:var(--mono);font-size:12px;min-height:1.4em}
+  .pverdict.ok{color:var(--ok)} .pverdict.no{color:var(--red)} .pverdict.warn{color:var(--amber)}
+  .toggle{font-family:var(--mono);font-size:10.5px;color:var(--steel);cursor:pointer;margin-left:auto;letter-spacing:.06em;text-transform:none}
+  #models-card.hidden{display:none}
+  .err{color:var(--red)}
+  @media(max-width:620px){ .hide-sm{display:none} }
+</style></head>
+<body><div class="wrap">
+  <header class="head">
+    <div class="eyebrow"><span class="dot" id="livedot"></span><span id="conn">connecting…</span><span id="who" style="margin-left:auto"></span></div>
+    <h1>GENGHIS Control Room</h1>
+    <p class="lede">One coordinator, every idle device, one AI mind — pool memory and compute to run models no single box could hold.</p>
+    <div class="stat-row">
+      <div class="stat"><span class="v" id="s-nodes">–</span><span class="k">Nodes up</span></div>
+      <div class="stat"><span class="v" id="s-pool">–</span><span class="k">Pooled memory</span></div>
+      <div class="stat"><span class="v" id="s-goal">–</span><span class="k">Default goal</span></div>
+      <div class="stat"><span class="v" id="s-model">–</span><span class="k">Warm models · who holds what</span></div>
+    </div>
+  </header>
+
+  <div class="sect-label">Local resources · your GENGHIS front door</div>
+  <div class="res-grid" id="resources"></div>
+
+  <div class="sect-label">Fleet</div>
+  <div class="card"><table>
+    <thead><tr><th>Node</th><th>Role</th><th>State</th><th class="hide-sm">Throughput</th><th class="hide-sm">Free</th><th class="hide-sm">Why</th><th></th></tr></thead>
+    <tbody id="fleet"><tr><td colspan="7" class="note">loading…</td></tr></tbody>
+  </table></div>
+  <p class="note" id="retired"></p>
+
+  <div class="sect-label">Models · which model each speed setting runs</div>
+  <div class="card"><table>
+    <thead><tr><th>Speed setting</th><th>Runs this model</th></tr></thead>
+    <tbody id="goalmap"></tbody>
+  </table></div>
+  <p class="note" id="mapnote"></p>
+
+  <div class="sect-label">The pool · your fleet's memory, and what lives in it <span class="toggle" id="viewtoggle" title="the same pool as a list with buttons — no dragging (phones, keyboards, screen readers)">list view · buttons, no dragging</span></div>
+  <div class="pool-wrap" id="poolwrap">
+    <div class="shelf">
+      <div class="sh">Models · drag one onto a host, or onto the pool</div>
+      <div id="shelf"><span class="note">loading…</span></div>
+      <p class="note" style="margin-top:8px">Or click a model, then click where it should go. Drag a warm block back here to unload.</p>
+    </div>
+    <div class="pool" id="pool">
+      <div class="forms" id="forms"><span class="fl">Formations</span><span class="note">loading…</span></div>
+      <div class="ph"><span class="t">Hosts and donors · used / free</span><span class="tot" id="pooltot"></span></div>
+      <div id="bars"></div>
+      <div id="blegend"></div>
+      <div class="fabric-drop" id="fabricdrop">drop here to warm ACROSS the fabric (a model no single card can hold)</div>
+      <div class="pverdict" id="pverdict"></div>
+    </div>
+  </div>
+  <div class="card hidden" id="models-card"><table>
+    <thead id="models-head"><tr><th>Model</th><th>Size</th><th>Kind</th><th>Status</th></tr></thead>
+    <tbody id="models"><tr><td colspan="4" class="note">loading…</td></tr></tbody>
+  </table></div>
+  <p class="note" id="resnote"></p>
+
+  <p class="note">Refreshes live · this page is your GENGHIS front door (bookmark it). Served by the coordinator — no Docker needed to see it.</p>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const H = location.hostname || "localhost";
+let MODELS = [];   // registry ids
+let ROLE = "admin";   // D25: filled from /whoami; gates the interactive controls
+const RANK = {viewer:0, operator:1, admin:2};
+const can = need => (RANK[ROLE] ?? 0) >= (RANK[need] ?? 9);
+
+async function whoami(){
+  try{
+    const w = await fetch("/whoami",{cache:"no-store"}).then(r=>r.json());
+    ROLE = w.role || "viewer";
+    $("#who").innerHTML = (w.user ? esc(w.user)+" · " : "") +
+      `<span style="color:var(--ember);font-weight:600;text-transform:uppercase;letter-spacing:.1em">${esc(ROLE)}</span>`;
+  }catch(e){ ROLE="admin"; }
+}
+
+function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function editing(){ const a=document.activeElement; return a && a.tagName==="SELECT"; }
+
+async function tick(){
+  try{
+    const [fab, reg, forms] = await Promise.all([
+      fetch("/fabric.json",{cache:"no-store"}).then(r=>r.json()),
+      fetch("/registry.json",{cache:"no-store"}).then(r=>r.json()),
+      fetch("/formations.json",{cache:"no-store"}).then(r=>r.json()).catch(()=>null)
+    ]);
+    if(forms) FORMS = forms;
+    $("#livedot").classList.add("live");
+    $("#conn").textContent = "live · coordinator " + esc(fab.coordinator) + " · " + esc(fab.generated)
+      + (fab.mode === "host" ? " · host of " + esc((fab.authority||"").replace(/^https?:\/\//,"")) : "");
+    // watchdog: the last time an independent pass verified the fleet (a cron on the authority, every 15 min)
+    fetch("/watchdog.json",{cache:"no-store"}).then(r=>r.json()).then(w=>{
+      if(!w || !w.ts) return;
+      const t = new Date(w.ts), age = Math.round((Date.now()-t.getTime())/60000);
+      const stale = age > 40;                       // two missed passes = worth noticing
+      const vUp = (w.nodes_up ?? w.donors_up), vAll = (w.nodes_expected ?? w.donors_expected);
+      const liveUp = fab.up, liveAll = fab.total;
+      // The live board (5 s heartbeats) is the truth of NOW; the watchdog is an independent 15-min verification.
+      // When they disagree (a node came back since the last pass), say so instead of showing a stale count as if current.
+      let txt;
+      if(vUp === liveUp && vAll === liveAll)
+        txt = " · verified " + t.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"}) + " · " + vUp + "/" + vAll + " nodes";
+      else
+        txt = " · live " + liveUp + "/" + liveAll + " · watchdog saw " + vUp + "/" + vAll + " at " + t.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"})
+            + (w.down && w.down.length ? " (" + w.down.join(", ") + " was down)" : "") + " · re-verifies within " + Math.max(1, 15 - (age % 15)) + " min";
+      if(stale) txt += " ⚠ last verification " + age + " min ago";
+      (w.gpu_problems||[]).forEach(g => { txt += " ⚠ " + g.id + " has no GPU: " + g.problem; });   // render-group bug, by name
+      $("#conn").textContent += txt;
+    }).catch(()=>{});
+    FAB = fab;
+    renderFabric(fab, reg);
+    LAST_REG = reg;
+    if(!editing()){ renderModels(reg); renderPool(fab, reg); renderForms(); }
+  }catch(e){
+    $("#livedot").classList.remove("live");
+    $("#conn").innerHTML = '<span class="err">coordinator unreachable — is <b>serve</b> running?</span>';
+  }
+}
+
+function renderFabric(fab, reg){
+  $("#s-nodes").textContent = fab.up + " / " + fab.total;
+  // pooled memory: FREE / USABLE across up compute nodes. Usable = each card/RAM after the planner's headroom (GPU x0.92,
+  // CPU RAM x0.85); free = usable minus every warm model and every shard it holds -- on EVERY host, this one included
+  // (a host's "free" string keeps its own warm pool as swappable, which is right for planning and wrong for a fleet
+  // memory figure: it read 36 GB with 13.6 GB of the NUC's own 70B share counted as free, 2026-09-18).
+  let freeMb = 0, cardMb = 0;
+  (fab.nodes||[]).forEach(n=>{ if(!n.up || n.role==="surface" || !n.card_mb) return; cardMb += n.card_mb; freeMb += Math.max(0, n.card_mb - (n.held_mb||0)); });
+  $("#s-pool").textContent = cardMb ? Math.round(freeMb/1024) + " of " + Math.round(cardMb/1024) + " GB free" : "–";   // the meaning in the value, the label short like its neighbours
+  $("#s-pool").title = cardMb ? "free / usable across every up node. Usable = nameplate minus the planner's headroom (GPUs 8 %, CPU RAM 15 %); free = usable minus every warm model and shard, on every host." : "";
+  const gm = (reg.goal_models||{})[fab.goal];
+  $("#s-goal").textContent = fab.goal ? (gm ? fab.goal + " → " + tinyModel(gm) : fab.goal) : "–";
+  $("#s-goal").title = gm || "";
+  // D38: every host's warm POOL, not just this host's active model — "nuc-155h: Qwen2.5-14B, qwen2.5-1.5b · laptop-5090: Qwen2.5-32B"
+  const holders = (fab.nodes||[]).filter(n=>n.up && (n.warm||[]).length);
+  const goalModel = (reg.goal_models||{})[fab.goal] || "";
+  $("#s-model").textContent = holders.length
+    ? holders.map(n=>n.warm.map(m=>{ const across=(n.pooled||{})[m]; return across && across.length>1 ? tinyModel(m)+" across "+across.join(" + ") : tinyModel(m)+" on "+n.name; }).join("  ·  ")).join("  ·  ")   // model first, then who holds it -- reads with the label
+    : "nothing warm yet — the first call loads it";
+  $("#s-model").title = goalModel
+    ? (holders.some(n=>n.warm.includes(goalModel))
+        ? `default goal ${fab.goal} → ${goalModel}: warm on ${holders.filter(n=>n.warm.includes(goalModel)).map(n=>n.name).join(", ")}`
+        : `default goal ${fab.goal} → ${goalModel}: not warm yet (first call loads it)`)
+    : "";
+
+  const rows = (fab.nodes||[]).map(n=>{
+    const st = n.state || (n.up ? "IDLE" : "DOWN");
+    const lendBtn = (can("admin") && n.role !== "surface" && n.lend !== undefined)
+      ? `<button class="btn" data-fleet="${n.lend === false ? "lend-on" : "lend-off"}" data-id="${esc(n.id)}" title="${n.lend === false ? "Put this GPU back in the pool (nothing moves until the next plan asks)" : "Keep this GPU for its owner (Blender/Resolve day) — it stays a host for its own work. Any pooled model another host keeps a shard of here is unloaded now; a chat mid-answer on it is not guaranteed."}">${n.lend === false ? "Lend on" : "Lend off"}</button> `
+      : '';
+    const act = can("admin") ? lendBtn + `<button class="btn" data-fleet="retire" data-id="${esc(n.id)}">Retire</button>` : '';
+    return `<tr>
+      <td class="name">${esc(n.name||n.id)}</td>
+      <td class="mono">${esc(n.role||"")}</td>
+      <td><span class="badge b-${esc(st)}">${esc(st)}</span></td>
+      <td class="mono hide-sm">${esc(n.thrput||"")}</td>
+      <td class="mono hide-sm">${esc(n.free||"")}</td>
+      <td class="note hide-sm" style="margin:0">${esc(n.why||"")}</td>
+      <td style="text-align:right">${act}</td>
+    </tr>`;
+  }).join("");
+  $("#fleet").innerHTML = rows || '<tr><td colspan="7" class="note">no nodes</td></tr>';
+  $("#fleet").querySelectorAll("button[data-fleet]").forEach(b=> b.onclick = ()=> fleetOp(b.dataset.fleet, b.dataset.id));
+  if(can("admin")) renderRetired();
+}
+
+async function renderRetired(){
+  try{
+    const f = await fetch("/fleet.json",{cache:"no-store"}).then(r=>r.json());
+    const ret = f._retired_donors || [];
+    $("#retired").innerHTML = ret.length
+      ? "Retired: " + ret.map(d=>`${esc(d.id)} <button class="btn" data-fleet="restore" data-id="${esc(d.id)}">restore</button>`).join(" &middot; ")
+      : "";
+    $("#retired").querySelectorAll("button[data-fleet]").forEach(b=> b.onclick = ()=> fleetOp(b.dataset.fleet, b.dataset.id));
+  }catch(e){}
+}
+
+async function fleetOp(action, id){
+  if(action==="retire" && !confirm(`Retire "${id}"? It moves to the retired list — reversible.`)) return;
+  try{
+    const r = await fetch("/fleet",{method:"POST",headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({action, id})});
+    const j = await r.json();
+    if(action.startsWith("lend") && j && j.note){ const v=$("#pverdict"); if(v){ v.className = "pverdict " + (j.ok ? (j.note.includes("Reclaimed") ? "warn" : "ok") : "no"); v.textContent = j.note; } }
+    tick();
+  }catch(e){}
+}
+
+function shortModel(f){ return String(f).replace(/\.gguf$/i,"").slice(0,34); }
+function tinyModel(f){ return String(f).replace(/[-_](instruct|it|chat|q\d.*|\.gguf).*$/i,"") || String(f); }   // Qwen2.5-32B
+
+let FAB = null;
+function renderModels(reg){
+  MODELS = (reg.models||[]).map(m=>m.id);
+  const resOn = reg.resident && reg.resident.enabled;
+  // D38: one column per HOST (a node that runs a serve = has a card to warm on). Every column is driven from
+  // the one page you are on: an order for another host is forwarded to its serve by this one.
+  const selfWarm = (reg.resident && reg.resident.pool || []).map(e=>e.model);
+  let hosts = ((FAB && FAB.nodes) || []).filter(n=>n.host && n.up).map(n=>({id:n.id, name:n.name, warm:n.warm||[], card:n.card_mb||0}));
+  if(!hosts.length) hosts = [{id:"", name:"this host", warm:selfWarm}];
+  // one column per HOST -- a node that runs its own serve and can hold a model warm on its card. Donors (rpc-server only)
+  // cannot hold a model on their own; they hold shards for a host, which the pool view draws (Michael asked, 2026-09-19)
+  $("#models-head").innerHTML = `<tr><th>Model</th><th title="weights + the KV cache at a 16k window + the compute floor — what a card must find; on-disk size on hover">Size · warm</th><th>Kind</th>${hosts.map(h=>`<th title="a host: runs its own serve, can hold a model warm. Donors hold shards for a host — see the pool view">${esc(h.name)}</th>`).join("")}</tr>`;
+  const ncol = 3 + hosts.length;
+  // D28: a model being pulled from the library shows up as a live progress row, not a mystery
+  const fx = reg.fetch || {};
+  const fetchRow = fx.active
+    ? `<tr><td class="name mono">${esc(fx.name||"")}</td><td class="mono">${fx.total?(fx.total/1073741824).toFixed(1)+" GB":"…"}</td><td><span class="mono" style="color:var(--faint)">fetching</span></td><td colspan="${hosts.length}"><span class="badge b-vlm">⇩ ${fx.pct||0}%</span> <span class="note">pulling from the model library</span></td></tr>`
+    : (fx.error ? `<tr><td class="name mono">${esc(fx.name||"")}</td><td></td><td></td><td colspan="${hosts.length}" class="note">fetch failed: ${esc(fx.error)}</td></tr>` : "");
+  const dis = can("operator") ? "" : "disabled";
+  $("#models").innerHTML = fetchRow + (reg.models||[]).map(m=>{
+    const kind = m.kind==="vlm" ? '<span class="badge b-vlm">VLM</span>' : '<span class="mono" style="color:var(--faint)">text</span>';
+    const cells = hosts.map(h=>{
+      const isWarm = h.warm.includes(m.id);
+      if(isWarm) return `<td><span class="badge b-warm">● WARM</span> <button class="btn" data-act="unload" data-model="${esc(m.id)}" data-node="${esc(h.id)}" ${dis}>Unload</button></td>`;
+      const need = m.warm_mb || (m.size_mb*1.05 + 1800);        // the registry's warm size (weights + KV at 16k + floor), same as the shelf
+      if(h.card && need > h.card)                                // a button that cannot work is a lie: say why instead (D40)
+        return `<td><span class="note" title="needs ~${(need/1024).toFixed(0)} GB; this card holds ~${(h.card/1024).toFixed(0)} GB">too big for this card (~${(need/1024).toFixed(0)} > ${(h.card/1024).toFixed(0)} GB)</span></td>`;
+      if(resOn)  return `<td><button class="btn" data-act="load" data-model="${esc(m.id)}" data-node="${esc(h.id)}" ${dis}>Warm now</button></td>`;
+      return "<td></td>";
+    }).join("");
+    return `<tr><td class="name mono">${esc(m.id)}</td><td class="mono" title="${(m.size_mb/1024).toFixed(1)} GB on disk">${gb(m.warm_mb||m.size_mb)}</td><td>${kind}</td>${cells}</tr>`;
+  }).join("") || (fetchRow ? "" : `<tr><td colspan="${ncol}" class="note">no .gguf found in your models folder</td></tr>`);
+  $("#models").querySelectorAll("button.btn").forEach(b=> b.onclick = ()=> resid(b.dataset.act, b.dataset.model, b.dataset.node));
+
+  // goal -> model selects
+  const gm = reg.goal_models||{};
+  const opt = (sel)=> [`<option value="">— default (${esc(reg.default_model||"none")}) —</option>`]
+      .concat((reg.models||[]).map(m=>`<option value="${esc(m.id)}"${m.id===sel?" selected":""}>${esc(m.id)}</option>`)).join("");
+  const dsel = can("operator") ? "" : "disabled";
+  $("#goalmap").innerHTML = (reg.goals||[]).map(g=>{
+    return `<tr><td><span class="goal">${esc(g)}</span></td>
+      <td><select data-goal="${esc(g)}" ${dsel}>${opt(gm[g]||"")}</select></td></tr>`;
+  }).join("");
+  $("#goalmap").querySelectorAll("select").forEach(s=> s.onchange = ()=>setGoal(s.dataset.goal, s.value));
+  if(!can("operator")){ $("#mapnote").textContent = "View-only — changing models or warming needs the operator role (D25)."; return; }
+  $("#mapnote").textContent = reg.resident && reg.resident.enabled
+     ? (reg.resident.error
+        ? "Residency on, but the warm server could not start — " + reg.resident.error + " (calls fall back to the slower per-request path until this is fixed)"
+        : "Residency on — the models you use stay warm on the host that ran them (a pool; the oldest goes only when the card is full). Warm now / Unload act on that host's card, from here.")
+     : "Residency off — set GENGHIS_RESIDENCY=1 (or config residency:true) to keep models warm.";
+}
+
+// ===================== The Pool (D39, pass 1) =====================
+// The fleet's memory as one bar per node; models as blocks. Drop a block on a bar = warm it there; on the pool
+// strip = warm it across the fabric; drag a warm block to the shelf = unload. Every hover asks the coordinator
+// for a DRY RUN (/plan.json) and paints the answer as a ghost, so the picture is the plan, not a guess.
+let POOL_DRAG = null, POOL_PLACING = null, POOL_PREVIEW = {key:"", data:null}, POOL_LOADING = {};
+function gb(mb){ return (mb/1024).toFixed(mb>=10240?0:1) + " GB"; }
+function parseGB(txt){ const m=/([\d.]+)\s*GB/.exec(txt||""); return m ? parseFloat(m[1])*1024 : 0; }
+function poolNodes(fab){
+  // compute nodes that are up, ordered like the planner ranks them (hosts first, then by throughput)
+  return (fab.nodes||[]).filter(n=>n.up && n.role!=="surface" && n.role!=="storage")
+    .map(n=>({id:n.id, name:n.name, host:!!n.host, card:n.card_mb||parseGB(n.free)||0, free:parseGB(n.free), warm:n.warm||[],
+              pooled:n.pooled||{}, escalated:n.escalated||[], pinnedMb:n.shard_held_mb||0, heldMb:(n.held_mb!=null?n.held_mb:null), why:n.why||"", state:n.state, tps:parseFloat(n.thrput)||0}))
+    .sort((a,b)=>(b.host-a.host)||(b.tps-a.tps));
+}
+function renderPool(fab, reg){
+  const nodes = poolNodes(fab); const models = reg.models||[];
+  const warmAny = new Set(); nodes.forEach(n=>n.warm.forEach(w=>warmAny.add(w)));
+  // shelf
+  $("#shelf").innerHTML = models.map(m=>`<div class="blk${warmAny.has(m.id)?" warm":""}${POOL_PLACING===m.id?" placing":""}" draggable="${warmAny.has(m.id)?"false":"true"}" data-model="${esc(m.id)}" title="${esc(m.id)}">
+      <span class="bn">${esc(tinyModel(m.id))}</span><span class="bs" title="${gb(m.size_mb)} on disk · ${gb(m.warm_mb||m.size_mb)} warm (weights + the KV cache at a 16k window + the compute floor) — the number a card has to find">${gb(m.warm_mb||m.size_mb)} warm${warmAny.has(m.id)?" · ●":""}</span></div>`).join("")
+    || '<span class="note">no .gguf in your models folder</span>';
+  // bars
+  // the total is the SUM OF THE BARS: usable minus what each node truly holds (its own warm models + shards parked on it) --
+  // not the nodes' plannable "free" strings, which keep a host's own pool as swappable (34 vs 44 GB, Michael 2026-09-19)
+  const heldOf = n => (n.heldMb!=null ? Math.max(0, n.heldMb) : Math.max(0, n.card - n.free));
+  const totCard = nodes.reduce((a,n)=>a+n.card,0), totFree = nodes.reduce((a,n)=>a+Math.max(0, n.card - heldOf(n)),0);
+  $("#pooltot").textContent = `${gb(totFree)} free of ${gb(totCard)} across ${nodes.length} nodes`;
+  $("#bars").innerHTML = nodes.map(n=>{
+    const used = Math.max(0, n.card - n.free);
+    const segs = [];
+    let x = 0;
+    // pooled shards parked here by another host: hatched  (own/freeShown are computed above the segment loop)
+    if(n.pinnedMb>0){ const w=100*n.pinnedMb/n.card;
+      // which pooled model spans this node? the holder's `pooled` map says so
+      const holder = nodes.find(h=>Object.values(h.pooled||{}).some(ns=>ns.includes(n.id)));
+      const pm = holder ? Object.keys(holder.pooled).find(m=>holder.pooled[m].includes(n.id)) : null;
+      segs.push(`<div class="seg pin${pm?" pooled":""}" ${pm?`data-pooled="${esc(pm)}"`:""} style="left:${x}%;width:${w}%" title="${esc(n.why)}">${pm?esc(tinyModel(pm))+" shard":"shard"} · ${gb(n.pinnedMb)}${holder?" · for "+esc(holder.name):""}</div>`); x+=w; }
+    // this node's own warm models (one segment for the rest of `used`, labelled with the names)
+    let own = n.heldMb!=null ? Math.max(0, n.heldMb - n.pinnedMb) : Math.max(0, used - n.pinnedMb);   // a donor's held memory IS its shard
+    if(POOL_LOADING[n.id]) own = Math.max(0, own - POOL_LOADING[n.id].mb);   // the loading share is already in the pool's books: draw it once, as loading
+    const freeShown = Math.max(0, n.card - own - n.pinnedMb - (POOL_LOADING[n.id]?POOL_LOADING[n.id].mb:0));   // what is truly left on this card
+    if(own>0 && n.host && n.warm.length){ const w=100*own/n.card; const label = n.warm.map(w=>tinyModel(w)).join(" · ");   // a donor's OS RAM drift is not "in use"; only warm models and shards are drawn
+      const drag = n.host && n.warm.length ? ` draggable="true" data-unload="${esc(n.warm[0])}" data-node="${esc(n.id)}" style="cursor:grab;left:${x}%;width:${w}%"` : ` style="left:${x}%;width:${w}%"`;
+      const pmHost = n.warm.find(m=>(n.pooled[m]||[]).length>1);                       // this host's block belongs to a pooled model
+      segs.push(`<div class="seg used${pmHost?" pooled":""}"${pmHost?` data-pooled="${esc(pmHost)}"`:""}${drag} title="${esc(label)} · ${gb(own)}">${esc(label)}</div>`); x+=w; }
+    else if(n.host && n.warm.length && Object.keys(n.pooled||{}).length){
+      // a pooled model this host HOSTS but holds none of (its own card was full, or the plan gave it 0 GB): still needs a handle,
+      // or it looks permanent -- the donors' shards are hatched pins by design (Michael, 2026-09-19)
+      const pm = Object.keys(n.pooled)[0]; const w = 14;
+      segs.push(`<div class="seg used pooled" data-pooled="${esc(pm)}" draggable="true" data-unload="${esc(pm)}" data-node="${esc(n.id)}" style="cursor:grab;left:${x}%;width:${w}%;opacity:.75" title="${esc(tinyModel(pm))} is hosted here but lives on ${esc((n.pooled[pm]||[]).join(" + "))} -- 0 GB on this card. Drag back to the shelf to unload.">${esc(tinyModel(pm))} · hosted here, 0 GB · across ${esc((n.pooled[pm]||[]).join(" + "))}</div>`); x+=w; }
+    if(POOL_LOADING[n.id]){ segs.push(`<div class="seg load" style="left:${x}%;width:${100*POOL_LOADING[n.id].mb/n.card}%">${esc(POOL_LOADING[n.id].label)}</div>`); }
+    const pinned = n.state==="PINNED";
+    return `<div class="bar${pinned?" busy":""}" data-node="${esc(n.id)}" data-host="${n.host?1:0}">
+      <div class="lbl"><div class="n">${esc(n.name)}${n.host?"":" <span class='f'>donor</span>"}</div><div class="f">${gb(freeShown)} free of ${gb(n.card)}${pinned?" · pinned":""}</div></div>
+      <div class="trk">${segs.join("")}<div class="ghost-slot" data-node="${esc(n.id)}"></div></div></div>`;
+  }).join("");
+  wirePool();
+  drawBrackets(nodes);
+  if(POOL_PREVIEW.data) paintGhost(POOL_PREVIEW.data);
+}
+const ACCENTS = ["var(--cyan)", "var(--magenta)", "var(--ember)", "var(--steel)"];
+function drawBrackets(nodes){
+  // one accent per pooled model, on every segment that is part of it; a spine in the gutter between the labels and
+  // the tracks, with a tick to each member; a legend line under the bars. Read straight from the rendered DOM.
+  const bars = $("#bars"); bars.querySelectorAll("#brackets").forEach(x=>x.remove());
+  const pooled = []; nodes.forEach(n=>Object.keys(n.pooled||{}).forEach(m=>{ if((n.pooled[m]||[]).length>1 && !pooled.includes(m)) pooled.push(m); }));
+  const legend = $("#blegend"); legend.innerHTML = "";
+  if(!pooled.length) return;
+  const R = bars.getBoundingClientRect();
+  const svg = document.createElementNS("http://www.w3.org/2000/svg","svg"); svg.id = "brackets";
+  pooled.forEach((m, i)=>{
+    const acc = ACCENTS[i % ACCENTS.length];
+    const segs = [...bars.querySelectorAll(`.seg[data-pooled="${CSS.escape(m)}"]`)];
+    segs.forEach(sg=>sg.style.setProperty("--acc", acc));
+    if(segs.length < 2) return;
+    const pts = segs.map(sg=>{ const r = sg.getBoundingClientRect(); return {x: r.left - R.left, y: r.top - R.top + r.height/2}; });
+    const xs = Math.min(...pts.map(p=>p.x)) - 7 - i*5;                                 // the spine sits just left of the tracks
+    const y0 = Math.min(...pts.map(p=>p.y)), y1 = Math.max(...pts.map(p=>p.y));
+    const path = document.createElementNS("http://www.w3.org/2000/svg","path");
+    path.setAttribute("d", `M${xs},${y0} L${xs},${y1} ` + pts.map(p=>`M${xs},${p.y} L${p.x},${p.y}`).join(" "));
+    path.setAttribute("stroke", acc); path.setAttribute("stroke-width", "2"); path.setAttribute("fill", "none"); path.setAttribute("stroke-linecap", "round");
+    svg.appendChild(path);
+    pts.forEach(p=>{ const c = document.createElementNS("http://www.w3.org/2000/svg","circle"); c.setAttribute("cx", xs); c.setAttribute("cy", p.y); c.setAttribute("r", "3"); c.setAttribute("fill", acc); svg.appendChild(c); });
+    const holder = nodes.find(n=>(n.pooled[m]||[]).length>1); const across = holder ? holder.pooled[m] : [];
+    // exact when this page's host holds it (the registry's pool entry knows its share and every shard); else host share + shards
+    const ent = ((LAST_REG||{}).resident||{}).pool ? LAST_REG.resident.pool.find(e=>e.model===m) : null;
+    const totMb = ent ? (ent.mb||0) + Object.values(ent.shards||{}).reduce((a,v)=>a+v,0)
+                      : nodes.filter(n=>across.includes(n.id)).reduce((a,n)=>a + (n.host ? Math.max(0,(n.heldMb||0)-n.pinnedMb) : n.pinnedMb), 0);
+    const line = document.createElement("div"); line.className = "blegend"; line.style.setProperty("--acc", acc);
+    const escal = holder && (holder.escalated||[]).includes(m);
+    line.innerHTML = `<b>⌐ ${esc(tinyModel(m))}</b> across ${esc(across.join(" + "))}${totMb?" · "+gb(totMb):""} · hosted by ${esc(holder?holder.name:"?")}${escal?" · <i>escalated for a long chat — drops back to one card when a chat that fits arrives</i>":""}`;
+    legend.appendChild(line);
+  });
+  bars.appendChild(svg);
+}
+let FORMS = null, FORM_APPLYING = null;
+function renderForms(){
+  const box = $("#forms"); if(!FORMS) return;
+  const names = Object.keys(FORMS.formations||{}); const cur = FORMS.current; const ap = FORMS.applying;
+  const chips = names.map(n=>{
+    const items = (FORMS.formations[n]||[]).map(i=>i.pooled ? `${tinyModel(i.model)} across the fabric` : `${tinyModel(i.model)} on ${i.node}`).join(" · ");
+    const busy = ap && !ap.done && ap.name===n;
+    return `<span class="chip${cur===n?" cur":""}${busy?" busy":""}" data-form="${esc(n)}" title="${esc(items)}">${esc(n)}${busy?` · ${ap.step}/${ap.of}`:""}<span class="x" data-del="${esc(n)}" title="delete this formation">×</span></span>`;
+  });
+  chips.push(`<span class="chip add" id="formsave" title="snapshot what is warm right now as a named formation">+ save current as…</span>`);
+  box.innerHTML = `<span class="fl">Formations</span>` + (names.length ? "" : `<span class="note">none yet — place your models, then save the layout as a name; switch layouts in one click.</span>`) + chips.join("");
+  box.querySelectorAll(".chip[data-form]").forEach(c=>{ c.onclick = e=>{ if(e.target.dataset.del) return; applyForm(c.dataset.form); }; });
+  box.querySelectorAll(".x[data-del]").forEach(x=>{ x.onclick = async e=>{ e.stopPropagation(); const n = x.dataset.del; if(!confirm(`Delete the formation "${n}"? (nothing is unloaded — only the saved layout goes)`)) return;
+    const r = await fetch("/formations",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"delete",name:n})}).then(r=>r.json()); showVerdict(!!r.ok, r.note||""); tick(); }; });
+  $("#formsave").onclick = async ()=>{ const live = (FORMS.live||[]).map(i=>i.pooled ? `${tinyModel(i.model)} across ${(i.nodes||[]).join(" + ")}` : `${tinyModel(i.model)} on ${i.node}`).join("; ");
+    if(!live){ showVerdict(false, "nothing is warm right now — place some models first, then save"); return; }
+    const n = prompt(`Save what is warm now as a formation:\n  ${live}\n\nName it:`); if(!n) return;
+    const r = await fetch("/formations",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"save",name:n.trim()})}).then(r=>r.json()); showVerdict(!!r.ok, r.note||""); tick(); };
+}
+async function applyForm(name){
+  if(FORMS && FORMS.current===name){ showVerdict(true, `${name} is already in place`); return; }
+  const plan = await fetch("/formations",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"plan",name})}).then(r=>r.json()).catch(()=>null);
+  if(!plan || !plan.ok){ showVerdict(false, plan ? plan.note : "could not ask the coordinator"); return; }
+  if(!(plan.steps||[]).length){ showVerdict(true, `${name} is already in place`); return; }
+  if(!confirm(`Switch to "${name}" — ${plan.steps.length} step(s):\n\n` + plan.steps.map((st,i)=>`  ${i+1}. ${st.note}`).join("\n") + `\n\nModels being unloaded stop answering until warmed again. Go?`)) return;
+  const r = await fetch("/formations",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"apply",name})}).then(r=>r.json()).catch(()=>null);
+  if(!r || !r.ok){ showVerdict(false, r ? r.note : "could not start"); return; }
+  showVerdict("warn", `switching to ${name} · ${r.note}`);
+  const poll = setInterval(async ()=>{
+    try{
+      const f = await fetch("/formations.json",{cache:"no-store"}).then(r=>r.json()); FORMS = f; renderForms();
+      const ap = f.applying; if(!ap){ clearInterval(poll); return; }
+      if(ap.done){ clearInterval(poll); showVerdict(!!ap.ok, (ap.ok ? "✓ " : "· ") + ap.note + (ap.log && ap.log.length ? " — " + ap.log[ap.log.length-1] : "")); tick(); return; }
+      let prog = ""; try{ const L = await fetch("/loading.json?node="+encodeURIComponent(ap.target||""),{cache:"no-store"}).then(r=>r.json()); if(L && L.text) prog = " · " + L.text; }catch(e){}
+      showVerdict("warn", `formation ${name} · step ${ap.step}/${ap.of} · ${ap.note}${prog}`);
+    }catch(e){}
+  }, 2000);
+}
+function wirePool(){
+  $("#shelf").querySelectorAll(".blk").forEach(b=>{
+    b.ondragstart = e=>{ if(b.classList.contains("warm")){ e.preventDefault(); return; } POOL_DRAG=b.dataset.model; e.dataTransfer.setData("text/plain", POOL_DRAG); e.dataTransfer.effectAllowed="copy"; };
+    b.ondragend = ()=>{ POOL_DRAG=null; clearGhost(); };
+    b.onclick = ()=>{ if(b.classList.contains("warm")) return; POOL_PLACING = (POOL_PLACING===b.dataset.model) ? null : b.dataset.model;
+      $("#shelf").querySelectorAll(".blk").forEach(x=>x.classList.toggle("placing", x.dataset.model===POOL_PLACING));
+      $("#pverdict").className="pverdict"; $("#pverdict").textContent = POOL_PLACING ? `now click a host bar, or the fabric strip, to place ${tinyModel(POOL_PLACING)}` : ""; };
+  });
+  // warm blocks drag out to unload
+  $("#bars").querySelectorAll(".seg.used[data-unload]").forEach(sg=>{
+    sg.ondragstart = e=>{ POOL_DRAG = null; e.dataTransfer.setData("text/unload", JSON.stringify({model:sg.dataset.unload, node:sg.dataset.node})); e.dataTransfer.effectAllowed="move"; };
+  });
+  const shelf = $("#shelf").parentElement;
+  shelf.ondragover = e=>{ if(e.dataTransfer.types.includes("text/unload")){ e.preventDefault(); } };
+  shelf.ondrop = e=>{ const u=e.dataTransfer.getData("text/unload"); if(u){ e.preventDefault(); const {model,node}=JSON.parse(u); resid("unload", model, node); } };
+  // bars: hover = dry run on that host; drop = warm there
+  $("#bars").querySelectorAll(".bar").forEach(bar=>{
+    const nid = bar.dataset.node, isHost = bar.dataset.host==="1";
+    bar.ondragover = e=>{ if(!POOL_DRAG) return; e.preventDefault(); e.dataTransfer.dropEffect = isHost ? "copy" : "none"; bar.classList.add("over");
+      if(isHost) preview(POOL_DRAG, {node:nid}); else showVerdict(false, `${nid} is a donor (no serve of its own) — drop on the pool strip to use it as part of the fabric`); };
+    bar.ondragleave = ()=>{ bar.classList.remove("over"); };
+    bar.ondrop = e=>{ e.preventDefault(); bar.classList.remove("over"); if(!POOL_DRAG || !isHost) return; place(POOL_DRAG, {node:nid}); POOL_DRAG=null; };
+    bar.onclick = ()=>{ if(!POOL_PLACING) return; if(!isHost){ showVerdict(false, `${nid} is a donor — use the fabric strip`); return; } place(POOL_PLACING, {node:nid}); };
+    bar.onmouseenter = ()=>{ if(POOL_PLACING && isHost) preview(POOL_PLACING, {node:nid}); };
+  });
+  const fd = $("#fabricdrop");
+  fd.ondragover = e=>{ if(!POOL_DRAG) return; e.preventDefault(); fd.classList.add("over"); $("#pool").classList.add("over"); preview(POOL_DRAG, {pooled:1}); };
+  fd.ondragleave = ()=>{ fd.classList.remove("over"); $("#pool").classList.remove("over"); };
+  fd.ondrop = e=>{ e.preventDefault(); fd.classList.remove("over"); $("#pool").classList.remove("over"); if(!POOL_DRAG) return; place(POOL_DRAG, {pooled:1}); POOL_DRAG=null; };
+  fd.onclick = ()=>{ if(POOL_PLACING) place(POOL_PLACING, {pooled:1}); };
+  fd.onmouseenter = ()=>{ if(POOL_PLACING) preview(POOL_PLACING, {pooled:1}); };
+  $("#viewtoggle").onclick = ()=>{ const c=$("#models-card"); c.classList.toggle("hidden"); $("#poolwrap").style.display = c.classList.contains("hidden") ? "" : "none"; $("#viewtoggle").textContent = c.classList.contains("hidden") ? "list view · buttons, no dragging" : "pool view · drag to place"; };
+}
+let PREVIEW_T = null;
+function preview(model, target){
+  const key = model + "|" + JSON.stringify(target);
+  if(POOL_PREVIEW.key===key && POOL_PREVIEW.data){ paintGhost(POOL_PREVIEW.data); return; }
+  clearTimeout(PREVIEW_T);
+  PREVIEW_T = setTimeout(async ()=>{
+    try{
+      const q = new URLSearchParams({model, ...(target.node?{node:target.node}:{pooled:"1"})});
+      const j = await fetch("/plan.json?"+q, {cache:"no-store"}).then(r=>r.json());
+      POOL_PREVIEW = {key, data:j}; paintGhost(j);
+    }catch(e){ showVerdict(false, "could not ask the planner"); }
+  }, 120);
+}
+function paintGhost(j){
+  clearGhost(false);
+  (j.nodes||[]).forEach(n=>{
+    const bar = $("#bars").querySelector(`.bar[data-node="${CSS.escape(n.id)}"] .trk`); if(!bar) return;
+    const used = Math.max(0, n.card_mb - n.free_mb); const w = Math.min(100, 100*n.mb/Math.max(1,n.card_mb)); const x = Math.min(100, 100*used/Math.max(1,n.card_mb));
+    const g = document.createElement("div"); g.className = "seg ghost" + (j.fits ? (j.warn ? " warn" : "") : " no"); g.style.left = x+"%"; g.style.width = w+"%";
+    g.textContent = tinyModel(j.model) + " · " + gb(n.mb) + (j.fits ? ` → ${gb(Math.max(0,n.free_mb-n.mb))} left` : " · won't fit"); bar.appendChild(g);
+  });
+  showVerdict(j.fits ? (j.warn ? "warn" : true) : false, j.why || (j.busy ? "the planner is busy — hover again in a moment" : ""));
+}
+function clearGhost(resetVerdict=true){ $("#bars").querySelectorAll(".seg.ghost").forEach(g=>g.remove()); if(resetVerdict){ $("#pverdict").textContent=""; $("#pverdict").className="pverdict"; } }
+function showVerdict(ok, text){ const v=$("#pverdict"); v.className = "pverdict " + (ok==="warn" ? "warn" : ok ? "ok" : "no"); v.textContent = text; }
+async function place(model, target){
+  POOL_PLACING = null; $("#shelf").querySelectorAll(".blk").forEach(x=>x.classList.remove("placing"));
+  const j = POOL_PREVIEW.data && POOL_PREVIEW.key===(model+"|"+JSON.stringify(target)) ? POOL_PREVIEW.data : null;
+  if(j && !j.fits){ showVerdict(false, j.why); return; }              // the ghost already said no: don't fire a request that fails
+  const where = target.node ? target.node : "the fabric";
+  const sizeMb = j ? j.need_mb : 0; const remote = j ? (j.nodes||[]).filter(n=>n.id!==(target.node||"")).reduce((a,n)=>a+n.mb,0) : 0;
+  const eta = remote ? ` — sending ~${gb(remote)} over the wire, about ${Math.max(1, Math.round(remote/1024/4.5))} min` : (sizeMb>8000 ? " — a big one, a minute or two from disk" : "");
+  const warmMsg = `warming ${tinyModel(model)} on ${where}${eta}…`;
+  showVerdict(true, warmMsg);
+  (j ? j.nodes : []).forEach(n=>{ POOL_LOADING[n.id] = {mb:n.mb, label:"loading " + tinyModel(model)}; });
+  POOL_PREVIEW = {key:"", data:null};                                  // no ghost over the loading stripe
+  renderPool(FAB, LAST_REG); clearGhost(false);
+  // D39 pass 2: while the load runs, ask the loading host what has ACTUALLY crossed the wire (kernel byte counts on
+  // Linux) and put it on the verdict line + the stripe -- "6.4 / 29.5 GB (22%) · 80 MB/s · ~5 min left" -- instead
+  // of the wire estimate above. The estimate stays until the first measurement arrives.
+  const loadHost = target.node || "";
+  const poll = setInterval(async ()=>{
+    try{
+      const L = await fetch("/loading.json?node=" + encodeURIComponent(loadHost), {cache:"no-store"}).then(r=>r.json());
+      if(L && L.loading && L.text){
+        showVerdict(true, `warming ${tinyModel(model)} on ${where} · ${L.text}`);
+        const pct = L.loading.measured ? ` · ${L.loading.pct}%` : "";
+        Object.keys(POOL_LOADING).forEach(k=>{ POOL_LOADING[k].label = "loading " + tinyModel(model) + pct; });
+        renderPool(FAB, LAST_REG);
+      }
+    }catch(e){}
+  }, 2000);
+  try{
+    const body = {action:"load", model, ...(target.node?{node:target.node}:{pooled:true})};
+    const r = await fetch("/residency",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const res = await r.json();
+    clearInterval(poll);
+    showVerdict(!!res.ok, (res.ok ? "✓ " : "· ") + (res.note || ""));
+  }catch(e){ clearInterval(poll); showVerdict(false, "request failed — coordinator unreachable"); }
+  POOL_LOADING = {}; POOL_PREVIEW = {key:"",data:null}; tick();
+}
+
+let LAST_REG = null;
+
+async function resid(action, model, node){
+  const rn = $("#resnote");
+  const where = node ? " on " + node : "";
+  rn.textContent = action==="unload" ? `Unloading ${tinyModel(model||"")}${where} — freeing VRAM…` : `Warming ${tinyModel(model||"")}${where} — first load can take a moment…`;
+  try{
+    const body = {action, model};              // unload WITH a model = that one warm server; the rest of the pool stays (D38)
+    if(node) body.node = node;                 // do it on THAT host's card (forwarded by this serve)
+    const r = await fetch("/residency",{method:"POST",headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(body)});
+    const j = await r.json();
+    rn.textContent = (j.ok ? "✓ " : "· ") + (j.note || (j.ok?"done":"failed"));
+    tick();   // refresh badges immediately
+  }catch(e){ rn.innerHTML = '<span class="err">request failed — coordinator unreachable</span>'; }
+}
+
+async function setGoal(goal, model){
+  try{
+    const r = await fetch("/config",{method:"POST",headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({goal_models:{[goal]: model||""}})});
+    $("#mapnote").textContent = r.ok ? `Saved: ${goal} → ${model||"default"}.` : "Save failed.";
+  }catch(e){ $("#mapnote").innerHTML = '<span class="err">save failed — coordinator unreachable</span>'; }
+}
+
+// --- Local resources: the front-door menu, with LIVE reachability (what a static page can't do) ---
+const RES = [
+  {id:"webui", name:"Open WebUI", desc:"Chat with your models — the branded GENGHIS chat window.", glyph:"◉", cls:"steel", port:3080, path:"/"},
+  {id:"grafana", name:"Grafana", desc:"Fleet metrics & dashboards — throughput, memory, up/down over time.", glyph:"▮", cls:"ember", port:3000, path:"/"},
+  {id:"prom", name:"Prometheus", desc:"Raw metrics & scrape targets — the data behind the dashboards.", glyph:"◆", cls:"steel", port:9090, path:"/"},
+  {id:"admin", name:"Fleet Admin", desc:"Name nodes, set roles, pick the default goal — the config panel.", glyph:"⚙", cls:"ember", same:"/admin"},
+  {id:"api", name:"Coordinator API", desc:"API reference — endpoints, examples, and how to point your own apps at GENGHIS.", glyph:"⟨⟩", cls:"steel", same:"/api"},
+];
+function resUrl(r){ return r.same ? r.same : `http://${H}:${r.port}${r.path||"/"}`; }
+function renderResources(){
+  $("#resources").innerHTML = RES.map(r=>{
+    const href = r.same ? r.same : resUrl(r);
+    return `<a class="res" href="${href}" target="${r.same?"_self":"_blank"}">
+      <span class="rstat" id="rs-${r.id}"><span class="rdot" id="rd-${r.id}"></span> …</span>
+      <span class="glyph ${r.cls}">${r.glyph}</span>
+      <span class="rt">${esc(r.name)}</span>
+      <span class="rd">${esc(r.desc)}</span>
+      <span class="ru">${esc(r.same ? location.origin + r.same : resUrl(r))}</span>
+    </a>`;
+  }).join("");
+}
+async function probeOne(r){
+  const dot = document.getElementById("rd-"+r.id), st = document.getElementById("rs-"+r.id);
+  if(!dot) return;
+  let up=false;
+  try{
+    if(r.same){ up = (await fetch(r.same,{cache:"no-store"})).ok; }
+    else { await fetch(resUrl(r),{mode:"no-cors",signal:AbortSignal.timeout(3500)}); up=true; }
+  }catch(e){ up=false; }
+  dot.className = "rdot " + (up?"up":"down");
+  // D29: the Docker tier (chat / dashboards) lives on the always-on home base. On any other host say WHY the
+  // card is dark instead of a bare "down" — nobody should click into a dead page wondering what broke.
+  st.lastChild.textContent = " " + (up ? "up" : (r.same ? "down" : "not on this host"));
+  if(!up && !r.same) st.title = "This lives in the optional Docker tier (docker compose up on your always-on host). See INSTALL.md.";
+}
+function probeResources(){ RES.forEach(probeOne); }
+
+(async()=>{ await whoami(); renderResources(); probeResources(); tick(); })();
+setInterval(probeResources, 15000);
+setInterval(tick, 4000);
+setInterval(whoami, 30000);
+</script>
+</body></html>

@@ -1,0 +1,26 @@
+# GENGHIS fleet monitoring — Prometheus scrape config.
+# Point Prometheus at the coordinator's /metrics endpoint (served by `genghis_coordinator.py serve`).
+#
+# Run it (Docker):
+#   docker run --rm -p 9090:9090 -v "${PWD}/prometheus.yml:/etc/prometheus/prometheus.yml" prom/prometheus
+# then open http://localhost:9090 (Status -> Targets should show the genghis job UP).
+
+global:
+  scrape_interval: 30s          # each scrape refreshes fleet liveness (a heartbeat); 30s is gentle on the Pi
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: genghis
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['CHANGE-ME:8899']    # <-- your authority's IP:port (the box that runs `serve` as the authority)
+        labels:
+          fleet: home
+
+    # --- If the coordinator is LOCKED (config auth.protect: "all"), send the PIN one of these ways ---
+    # authorization:
+    #   type: Bearer
+    #   credentials: "YOUR_PIN"
+    # ...or as a query param:
+    # params:
+    #   token: ["YOUR_PIN"]

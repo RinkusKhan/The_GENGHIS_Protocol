@@ -1,0 +1,38 @@
+# GENGHIS SSO overlay (D25 slice 4) — make Open WebUI + Grafana trust the SAME edge-forwarded identity, so
+# one Cloudflare Access (or oauth2-proxy) login covers the Control Room, chat, AND dashboards. OPT-IN: layer
+# this over the main compose only when your auth edge (slice 3) is live:
+#
+#   docker compose -f docker-compose.yml -f deploy/auth/docker-compose.sso.yml up -d
+#
+# Without it, the default stays local (Open WebUI open, Grafana admin/admin + anon). The trusted-email header
+# defaults to Cloudflare's; for the self-hosted oauth2-proxy path set TRUSTED_EMAIL_HEADER=X-Auth-Request-Email.
+#
+#   SECURITY: the edge must STRIP inbound copies of this header (Cloudflare/Caddy do) and these ports
+#   (:3080, :3000) must be reachable ONLY via the tunnel/localhost — firewall them from the rest of the LAN,
+#   else someone could set the header directly. Same trusted-header rule as the coordinator's proxy_secret.
+
+services:
+  open-webui:
+    environment:
+      # Trust the edge's verified email -> auto sign-in as that user (no separate Open WebUI password).
+      # The FIRST email to sign in becomes the Open WebUI admin; the rest are normal users.
+      - WEBUI_AUTH=True
+      - WEBUI_AUTH_TRUSTED_EMAIL_HEADER=${TRUSTED_EMAIL_HEADER:-Cf-Access-Authenticated-User-Email}
+      - WEBUI_AUTH_TRUSTED_NAME_HEADER=${TRUSTED_NAME_HEADER:-Cf-Access-Authenticated-User-Email}
+
+  grafana:
+    environment:
+      # Grafana auth proxy: trust the same email header as the username; auto-create the account on first hit.
+      - GF_AUTH_PROXY_ENABLED=true
+      - GF_AUTH_PROXY_HEADER_NAME=${TRUSTED_EMAIL_HEADER:-Cf-Access-Authenticated-User-Email}
+      - GF_AUTH_PROXY_HEADER_PROPERTY=username
+      - GF_AUTH_PROXY_AUTO_SIGN_UP=true
+      - GF_AUTH_PROXY_SYNC_TTL=60
+      # Only trust the header from the proxy's source. Adjust to your docker bridge gateway (docker network
+      # inspect genghis_default) AND firewall :3000 from the LAN. This is Grafana's anti-spoof.
+      - GF_AUTH_PROXY_WHITELIST=${GF_PROXY_WHITELIST:-172.16.0.0/12}
+      # New SSO users land as Viewers; promote yourself to Grafana Admin once (Server Admin > Users),
+      # or map roles via a groups header if your edge forwards one.
+      - GF_USERS_AUTO_ASSIGN_ORG_ROLE=Viewer
+      # Keep the built-in admin/admin login as a break-glass fallback (don't lock yourself out while wiring).
+      # Once SSO works you may set GF_AUTH_DISABLE_LOGIN_FORM=true.

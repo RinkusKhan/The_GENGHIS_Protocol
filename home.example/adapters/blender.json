@@ -1,0 +1,64 @@
+{
+  "id": "blender",
+  "name": "Blender",
+  "description": "Drives a running Blender through its MCP add-on's socket bridge.",
+
+  "enabled": false,
+  "_comment_enabled": "OFF by design. Arming this lets a local model change your open Blender scene. Set it to true only when you want that, and only on a machine where you are the one running Blender. GENGHIS never enables an adapter for you.",
+
+  "transport": "blender-socket",
+  "host": "localhost",
+  "port": 9876,
+  "timeout": 30,
+
+  "_comment_safety": "The add-on's ONLY operation is 'run this Python inside Blender'. There is no safe subset to expose, so the model never writes code: it picks one of the named operations below and supplies arguments, which GENGHIS injects as JSON literals bound to variables above the operation's own body. An argument cannot become code, and an argument the operation did not declare is dropped. A raw-code operation is deliberately NOT shipped here - add one yourself if you accept what it means.",
+
+  "operations": {
+    "scene_info": {
+      "description": "List the objects in the current Blender scene with their type and location, plus the Blender version and whether the file has unsaved changes. Read-only.",
+      "parameters": { "type": "object", "properties": {} },
+      "code": "import bpy\nsc = bpy.context.scene\nresult = {\n  'blender': bpy.app.version_string,\n  'scene': sc.name,\n  'unsaved': bpy.data.is_dirty,\n  'filepath': bpy.data.filepath or None,\n  'frame': sc.frame_current,\n  'objects': [{'name': o.name, 'type': o.type,\n               'location': [round(v, 4) for v in o.location],\n               'visible': o.visible_get()} for o in sc.objects]\n}\nprint(result)\n"
+    },
+
+    "add_object": {
+      "description": "Add a primitive object to the scene at a location. Returns the created object's name.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string", "enum": ["CUBE", "SPHERE", "CYLINDER", "CONE", "TORUS", "PLANE", "MONKEY"],
+                    "description": "Which primitive to add." },
+          "name": { "type": "string", "description": "Optional name for the new object." },
+          "location": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3,
+                        "description": "XYZ location, e.g. [0, 0, 2]. Defaults to the origin." },
+          "size": { "type": "number", "description": "Size/radius. Defaults to 1." }
+        },
+        "required": ["kind"]
+      },
+      "code": "import bpy\ntry: location\nexcept NameError: location = [0.0, 0.0, 0.0]\ntry: size\nexcept NameError: size = 1.0\ntry: name\nexcept NameError: name = None\nloc = tuple(float(v) for v in (location or [0, 0, 0]))[:3]\nops = {\n  'CUBE': lambda: bpy.ops.mesh.primitive_cube_add(size=float(size) * 2, location=loc),\n  'SPHERE': lambda: bpy.ops.mesh.primitive_uv_sphere_add(radius=float(size), location=loc),\n  'CYLINDER': lambda: bpy.ops.mesh.primitive_cylinder_add(radius=float(size), location=loc),\n  'CONE': lambda: bpy.ops.mesh.primitive_cone_add(radius1=float(size), location=loc),\n  'TORUS': lambda: bpy.ops.mesh.primitive_torus_add(major_radius=float(size), location=loc),\n  'PLANE': lambda: bpy.ops.mesh.primitive_plane_add(size=float(size) * 2, location=loc),\n  'MONKEY': lambda: bpy.ops.mesh.primitive_monkey_add(size=float(size) * 2, location=loc),\n}\nk = str(kind).upper()\nif k not in ops:\n    raise ValueError('unknown kind: ' + k)\nops[k]()\nobj = bpy.context.active_object\nif name:\n    obj.name = str(name)\nresult = {'created': obj.name, 'type': obj.type, 'location': [round(v, 4) for v in obj.location]}\nprint(result)\n"
+    },
+
+    "move_object": {
+      "description": "Move an existing object to a new XYZ location.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "description": "The object's exact name." },
+          "location": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3,
+                        "description": "New XYZ location." }
+        },
+        "required": ["name", "location"]
+      },
+      "code": "import bpy\nobj = bpy.data.objects.get(str(name))\nif obj is None:\n    raise KeyError('no object named ' + str(name) + '; have: ' + ', '.join(o.name for o in bpy.data.objects))\nobj.location = tuple(float(v) for v in location)[:3]\nresult = {'moved': obj.name, 'location': [round(v, 4) for v in obj.location]}\nprint(result)\n"
+    },
+
+    "delete_object": {
+      "description": "Delete an object from the scene by exact name.",
+      "parameters": {
+        "type": "object",
+        "properties": { "name": { "type": "string", "description": "The object's exact name." } },
+        "required": ["name"]
+      },
+      "code": "import bpy\nobj = bpy.data.objects.get(str(name))\nif obj is None:\n    raise KeyError('no object named ' + str(name))\nbpy.data.objects.remove(obj, do_unlink=True)\nresult = {'deleted': str(name), 'remaining': [o.name for o in bpy.data.objects]}\nprint(result)\n"
+    }
+  }
+}

@@ -1,0 +1,26 @@
+The GENGHIS Protocol™
+Copyright 2026 Michael B. Rinkus
+
+This product includes software developed for The GENGHIS Protocol
+(https://github.com/RinkusKhan/The_GENGHIS_Protocol).
+
+Licensed under the Apache License, Version 2.0. See the LICENSE file for terms.
+
+"GENGHIS"™ and "The GENGHIS Protocol"™ are common-law trademarks of the project
+author (unregistered; ™ denotes a claim of rights, not a USPTO registration — ® is
+not used and would require a granted registration). The Apache 2.0 license covers the
+code; it does not grant rights to use these names or marks except as needed to describe
+the origin of the Work (see Section 6 of the LICENSE).
+
+--------------------------------------------------------------------------------
+Third-party components
+--------------------------------------------------------------------------------
+
+This project builds on and interoperates with the following independent works.
+They are NOT distributed as part of this repository; they are fetched and built
+separately by the setup scripts. Their own licenses govern their use.
+
+- llama.cpp  (https://github.com/ggml-org/llama.cpp)
+  Licensed under the MIT License. Copyright (c) 2023-2024 The ggml authors.
+  The GENGHIS Protocol invokes llama.cpp's `ggml-rpc-server` and `llama-cli`
+  binaries over the network (RPC); it does not link or embed llama.cpp source.

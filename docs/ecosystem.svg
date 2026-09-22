@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="720" viewBox="0 0 1000 720" font-family="'Segoe UI',Helvetica,Arial,sans-serif">
+  <rect x="0" y="0" width="1000" height="720" rx="16" fill="#0f172a" stroke="#1e293b" stroke-width="2"/>
+
+  <text x="500" y="42" text-anchor="middle" fill="#e2e8f0" font-size="28" font-weight="700">The GENGHIS Ecosystem</text>
+  <text x="500" y="66" text-anchor="middle" fill="#94a3b8" font-size="14">One coordinator — many donors, from the under-utilized hardware you already own</text>
+
+  <!-- coordinator hub -->
+  <rect x="418" y="86" width="164" height="46" rx="10" fill="#0b1220" stroke="#38bdf8" stroke-width="1.5"/>
+  <g transform="translate(444,109)" stroke="#38bdf8" stroke-width="2" fill="none"><circle cx="0" cy="0" r="10"/><circle cx="0" cy="0" r="4.5"/></g>
+  <text x="470" y="105" fill="#e0f2fe" font-size="12.5" font-weight="700">GENGHIS</text>
+  <text x="470" y="120" fill="#7dd3fc" font-size="10.5">Coordinator</text>
+  <text x="500" y="152" text-anchor="middle" fill="#64748b" font-size="11">every device below is a donor that streams its layer-shard into the pipeline</text>
+
+  <!-- ============ NATIVE ============ -->
+  <text x="500" y="182" text-anchor="middle" fill="#34d399" font-size="13" font-weight="700" letter-spacing="1">PROVEN — works today</text>
+
+  <g transform="translate(329,198)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#0c2a20" stroke="#34d399" stroke-width="1.5"/>
+    <g transform="translate(0,32)" stroke="#34d399" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-18" y="-14" width="36" height="22" rx="2"/><path d="M-24 12 L24 12 L19 8 L-19 8 Z" fill="#34d399" stroke="none"/></g>
+    <text x="0" y="74" text-anchor="middle" fill="#a7f3d0" font-size="11">Laptop</text></g>
+  <g transform="translate(443,198)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#0c2a20" stroke="#34d399" stroke-width="1.5"/>
+    <g transform="translate(0,32)" stroke="#34d399" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-17" y="-16" width="34" height="24" rx="2"/><path d="M-8 16 L8 16 M0 8 L0 16"/></g>
+    <text x="0" y="74" text-anchor="middle" fill="#a7f3d0" font-size="11">Desktop PC</text></g>
+  <g transform="translate(557,198)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#0c2a20" stroke="#34d399" stroke-width="1.5"/>
+    <g transform="translate(0,32)" stroke="#34d399" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-13" y="-18" width="26" height="36" rx="2"/><path d="M-7 -12 H7 M-7 -6 H7"/><circle cx="-6" cy="9" r="1.7" fill="#34d399" stroke="none"/><circle cx="0" cy="9" r="1.7" fill="#34d399" stroke="none"/></g>
+    <text x="0" y="74" text-anchor="middle" fill="#a7f3d0" font-size="11">Server</text></g>
+  <g transform="translate(671,198)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#0c2a20" stroke="#34d399" stroke-width="1.5"/>
+    <g transform="translate(0,32)" stroke="#34d399" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-20" y="-10" width="40" height="20" rx="5"/><circle cx="12" cy="0" r="2"/><circle cx="-9" cy="0" r="1.6" fill="#34d399" stroke="none"/></g>
+    <text x="0" y="74" text-anchor="middle" fill="#a7f3d0" font-size="11">Mac · Metal</text></g>
+  <g transform="translate(785,198)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#0c2a20" stroke="#34d399" stroke-width="1.5"/>
+    <g transform="translate(0,30)" stroke="#34d399" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-20" y="-15" width="40" height="26" rx="2"/><path d="M-8 18 H8 M0 11 V18"/></g>
+    <text x="0" y="66" text-anchor="middle" fill="#a7f3d0" font-size="11">Samsung TV</text>
+    <text x="0" y="80" text-anchor="middle" fill="#7dd3fc" font-size="8.5">STORE · HEARTH (D8)</text></g>
+
+  <!-- ============ FEASIBLE ============ -->
+  <text x="500" y="318" text-anchor="middle" fill="#fbbf24" font-size="13" font-weight="700" letter-spacing="1">FEASIBLE — via a Linux layer</text>
+
+  <!-- row A -->
+  <g transform="translate(272,334)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#2a2110" stroke="#fbbf24" stroke-width="1.5"/>
+    <g transform="translate(0,32)" stroke="#fbbf24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-9" y="-18" width="18" height="36" rx="3"/><path d="M-3 -14 H3"/><circle cx="0" cy="13" r="1.6"/></g>
+    <text x="0" y="74" text-anchor="middle" fill="#fde68a" font-size="11">Phone</text></g>
+  <g transform="translate(386,334)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#2a2110" stroke="#fbbf24" stroke-width="1.5"/>
+    <g transform="translate(0,32)" stroke="#fbbf24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-14" y="-18" width="28" height="36" rx="3"/><circle cx="0" cy="13" r="1.8"/></g>
+    <text x="0" y="74" text-anchor="middle" fill="#fde68a" font-size="11">Tablet</text></g>
+  <g transform="translate(500,334)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#2a2110" stroke="#fbbf24" stroke-width="1.5"/>
+    <g transform="translate(0,30)" stroke="#fbbf24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-20" y="-15" width="40" height="26" rx="2"/><path d="M-8 18 H8 M0 11 V18"/></g>
+    <text x="0" y="74" text-anchor="middle" fill="#fde68a" font-size="11">Android TV</text></g>
+  <g transform="translate(614,334)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#2a2110" stroke="#fbbf24" stroke-width="1.5"/>
+    <g transform="translate(0,32)" stroke="#fbbf24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-16" y="-7" width="24" height="14" rx="7"/><path d="M8 -3 H18 M8 3 H18"/></g>
+    <text x="0" y="74" text-anchor="middle" fill="#fde68a" font-size="11">Fire / Stick</text></g>
+  <g transform="translate(728,334)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#2a2110" stroke="#fbbf24" stroke-width="1.5"/>
+    <g transform="translate(0,32)" stroke="#fbbf24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-22" y="-15" width="44" height="30" rx="2"/><path d="M-18 -11 H12" stroke-dasharray="1.5 2.5"/><rect x="-6" y="-3" width="12" height="10" rx="1"/><rect x="14" y="-9" width="7" height="6" rx="1"/></g>
+    <text x="0" y="74" text-anchor="middle" fill="#fde68a" font-size="11">Raspberry Pi</text></g>
+
+  <!-- row B -->
+  <g transform="translate(272,440)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#2a2110" stroke="#fbbf24" stroke-width="1.5"/>
+    <g transform="translate(0,32)" stroke="#fbbf24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-20" y="-14" width="40" height="28" rx="2"/><rect x="-13" y="-9" width="26" height="18" rx="1"/><path d="M-8 -9 V9 M-2 -9 V9 M4 -9 V9 M10 -9 V9"/></g>
+    <text x="0" y="74" text-anchor="middle" fill="#fde68a" font-size="10.5">Jetson / Shield</text></g>
+  <g transform="translate(386,440)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#2a2110" stroke="#fbbf24" stroke-width="1.5"/>
+    <g transform="translate(0,32)" stroke="#fbbf24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-16" y="-16" width="32" height="9" rx="2"/><circle cx="10" cy="-11.5" r="1.4" fill="#fbbf24" stroke="none"/><rect x="-16" y="-4.5" width="32" height="9" rx="2"/><circle cx="10" cy="0" r="1.4" fill="#fbbf24" stroke="none"/><rect x="-16" y="7" width="32" height="9" rx="2"/><circle cx="10" cy="11.5" r="1.4" fill="#fbbf24" stroke="none"/></g>
+    <text x="0" y="74" text-anchor="middle" fill="#fde68a" font-size="11">NAS · Docker</text></g>
+  <g transform="translate(500,440)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#2a2110" stroke="#fbbf24" stroke-width="1.5"/>
+    <g transform="translate(0,32)" stroke="#fbbf24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-24" y="-13" width="48" height="26" rx="10"/><rect x="-9" y="-8" width="18" height="16" rx="1"/><circle cx="-16" cy="0" r="3"/><circle cx="16" cy="0" r="3"/></g>
+    <text x="0" y="74" text-anchor="middle" fill="#fde68a" font-size="10.5">Steam Deck</text></g>
+  <g transform="translate(614,440)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#2a2110" stroke="#fbbf24" stroke-width="1.5"/>
+    <g transform="translate(0,32)" stroke="#fbbf24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-22" y="-10" width="44" height="20" rx="9"/><circle cx="-9" cy="0" r="6"/><circle cx="9" cy="0" r="6"/><path d="M-20 -8 L-24 -14 M20 -8 L24 -14"/></g>
+    <text x="0" y="74" text-anchor="middle" fill="#fde68a" font-size="11">VR Headset</text></g>
+  <g transform="translate(728,440)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#2a2110" stroke="#fbbf24" stroke-width="1.5"/>
+    <g transform="translate(0,32)" stroke="#fbbf24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M-13 13 V0 L0 -12 L13 0 V13 Z"/><rect x="-3.5" y="5" width="7" height="8"/></g>
+    <text x="0" y="74" text-anchor="middle" fill="#fde68a" font-size="11">Home Hub</text></g>
+
+  <!-- ============ ASPIRATIONAL ============ -->
+  <text x="500" y="560" text-anchor="middle" fill="#a78bfa" font-size="13" font-weight="700" letter-spacing="1">ASPIRATIONAL — locked (custom app / homebrew)</text>
+
+  <g transform="translate(386,576)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#1c1633" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5 4"/>
+    <g transform="translate(0,32)" stroke="#a78bfa" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M-20 -6 Q-25 8 -15 11 Q-9 12 -6 6 L6 6 Q9 12 15 11 Q25 8 20 -6 Q15 -12 7 -8 L-7 -8 Q-15 -12 -20 -6 Z"/><path d="M-13 -1 H-6 M-9.5 -4.5 V2.5"/><circle cx="9" cy="-2" r="1.6" fill="#a78bfa" stroke="none"/><circle cx="13" cy="2" r="1.6" fill="#a78bfa" stroke="none"/></g>
+    <text x="0" y="74" text-anchor="middle" fill="#ddd6fe" font-size="10.5">Switch / Vita</text></g>
+  <g transform="translate(500,576)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#1c1633" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5 4"/>
+    <g transform="translate(0,32)" stroke="#a78bfa" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-12" y="-18" width="24" height="36" rx="4"/><path d="M-4 -18 H4"/><circle cx="0" cy="13" r="1.6"/></g>
+    <text x="0" y="74" text-anchor="middle" fill="#ddd6fe" font-size="10.5">iPhone / iPad</text></g>
+  <g transform="translate(614,576)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#1c1633" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5 4"/>
+    <g transform="translate(0,30)" stroke="#a78bfa" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-20" y="-15" width="40" height="26" rx="2"/><path d="M-8 18 H8 M0 11 V18"/><rect x="7" y="-3" width="12" height="9" rx="1.5" fill="#1c1633"/><path d="M9.5 -3 V-6 a3.5 3.5 0 0 1 7 0 V-3"/></g>
+    <text x="0" y="74" text-anchor="middle" fill="#ddd6fe" font-size="10">webOS (LG) TV</text></g>
+
+  <text x="500" y="700" text-anchor="middle" fill="#64748b" font-size="11">The best donor is the one already idle in your home. Green = proven · Amber = Linux layer · Violet = aspirational / locked.</text>
+</svg>

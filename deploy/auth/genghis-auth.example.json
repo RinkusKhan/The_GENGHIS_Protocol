@@ -1,0 +1,12 @@
+{
+  "_comment": "D25 slice 3 — the auth block to MERGE into the coordinator config once your Cloudflare Tunnel + Access is in front of :8899. Apply it with the POST /config call in README.md. Until then GENGHIS stays in LOCAL mode (direct-LAN = admin), unchanged. Do NOT enable proxy_secret before the tunnel is live, or you'll drop your own local access to viewer.",
+  "auth": {
+    "user_header": "Cf-Access-Authenticated-User-Email",
+    "roles_by_user": {
+      "you@example.com": "admin"
+    },
+    "roles_by_group": {},
+    "default_role": "viewer",
+    "proxy_secret": "CHANGE-ME-to-a-long-random-string"
+  }
+}

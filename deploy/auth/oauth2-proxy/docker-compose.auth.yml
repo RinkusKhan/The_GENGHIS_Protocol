@@ -1,0 +1,61 @@
+# GENGHIS auth overlay — oauth2-proxy (Entra/LDAP OIDC) + Caddy (TLS + forward-auth). D25 slice 3.
+# Opt-in, self-hosted alternative to Cloudflare. Run alongside the main `genghis` compose project:
+#   docker compose --env-file genghis-auth.env -f docker-compose.auth.yml up -d
+# Caddy authenticates every request via oauth2-proxy, strips spoofed inbound identity headers, injects the
+# verified ones (+ X-Genghis-Proxy), and reverse-proxies to the coordinator / Open WebUI / Grafana.
+name: genghis-auth
+
+x-labels: &labels
+  com.genghis.project: "genghis"
+  com.genghis.tier: "auth"
+  com.genghis.managed: "true"
+
+services:
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1   # pinned (D18)
+    container_name: genghis-oauth2-proxy
+    labels: *labels
+    environment:
+      OAUTH2_PROXY_PROVIDER: oidc
+      OAUTH2_PROXY_OIDC_ISSUER_URL: "https://login.microsoftonline.com/${TENANT_ID}/v2.0"
+      OAUTH2_PROXY_CLIENT_ID: "${CLIENT_ID}"
+      OAUTH2_PROXY_CLIENT_SECRET: "${CLIENT_SECRET}"
+      OAUTH2_PROXY_COOKIE_SECRET: "${COOKIE_SECRET}"
+      OAUTH2_PROXY_REDIRECT_URL: "https://${DOMAIN}/oauth2/callback"
+      OAUTH2_PROXY_EMAIL_DOMAINS: "*"                 # restrict to your tenant's domains if you like
+      OAUTH2_PROXY_SCOPE: "openid email profile"
+      OAUTH2_PROXY_OIDC_GROUPS_CLAIM: "groups"        # Entra: add the optional "groups" claim to the token
+      OAUTH2_PROXY_SET_XAUTHREQUEST: "true"           # emit X-Auth-Request-User/-Email/-Groups on /oauth2/auth
+      OAUTH2_PROXY_REVERSE_PROXY: "true"
+      OAUTH2_PROXY_HTTP_ADDRESS: "0.0.0.0:4180"
+      OAUTH2_PROXY_UPSTREAMS: "static://202"          # forward-auth only; Caddy does the real routing
+      OAUTH2_PROXY_COOKIE_SECURE: "true"
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2.8                                  # pinned (D18)
+    container_name: genghis-caddy
+    labels: *labels
+    ports: ["443:443", "80:80"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"           # reach the coordinator on the host
+    environment:
+      DOMAIN: "${DOMAIN}"
+      PROXY_SECRET: "${PROXY_SECRET}"
+      COORD_UPSTREAM: "${COORD_UPSTREAM}"
+      CHAT_UPSTREAM: "${CHAT_UPSTREAM}"
+      GRAFANA_UPSTREAM: "${GRAFANA_UPSTREAM}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [oauth2-proxy]
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+
+# Join the main project's network so container upstreams (open-webui, genghis-grafana) resolve.
+networks:
+  default:
+    name: genghis_default
+    external: true

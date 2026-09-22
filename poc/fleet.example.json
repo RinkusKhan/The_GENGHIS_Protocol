@@ -1,0 +1,58 @@
+{
+  "_schema": "GENGHIS fleet registry — see coordinator-notes.md for field definitions. THIS IS AN EXAMPLE. The real fleet.json is generated for YOUR machines by `genghis init` and is git-ignored (never committed). Every value here is a placeholder — replace with your own, or just run init.",
+  "updated": "1970-01-01",
+  "coordinator": {
+    "id": "coordinator",
+    "host": "coordinator.local",
+    "ip": "0.0.0.0",
+    "role": "coordinator",
+    "arch": "aarch64",
+    "ram_total_mb": 8192,
+    "disk_gb": 1000,
+    "notes": "control plane + model repository + telemetry ledger — the always-on node (a Pi, NAS, or mini-PC is ideal)"
+  },
+  "donors": [
+    {
+      "id": "this-node",
+      "host": "this-host.local",
+      "local": true,
+      "device": "CUDA0",
+      "arch": "x86_64",
+      "accelerator": "cuda",
+      "gpu": "<your GPU here>",
+      "vram_total_mb": 8192,
+      "cores": 8,
+      "role": "compute",
+      "link_type": "local",
+      "latency_ms_to_orchestrator": 0.0,
+      "tokens_per_s_solo": 0.0,
+      "status": "up",
+      "reliability": 1.0,
+      "notes": "The orchestrator's own accelerator (local anchor — no RPC hop). `genghis init` fills this in from THIS machine."
+    },
+    {
+      "id": "donor-a",
+      "host": "donor-a.local",
+      "ip": "0.0.0.0",
+      "port": 50052,
+      "arch": "x86_64",
+      "accelerator": "cpu",
+      "cores": 4,
+      "ram_total_mb": 8192,
+      "role": "compute",
+      "link_type": "wifi-5ghz-ac",
+      "latency_ms_to_orchestrator": 1.0,
+      "tokens_per_s_solo": 0.0,
+      "status": "up",
+      "reliability": 1.0,
+      "notes": "An example remote donor running ggml-rpc-server on :50052. Add yours with `genghis init` (mDNS auto-discovery) or by hand."
+    }
+  ],
+  "_retired_donors": [],
+  "_pending_donors": [
+    { "id": "example-pending", "planned": "A node you intend to add later — informational only, ignored by the planner." }
+  ],
+  "_eye_nodes": [
+    { "id": "example-eye", "host": "eye.local", "ip": "0.0.0.0", "role": "eye", "camera": "<camera model>", "status": "provisioning", "notes": "D20 task-fabric sensor node (camera trigger -> pooled VLM). Not a compute donor; excluded from the RPC pool by design." }
+  ]
+}

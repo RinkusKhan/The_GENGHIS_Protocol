@@ -1,0 +1,10 @@
+# Auto-provisioned Prometheus datasource. uid "prometheus" matches the dashboard's datasource refs.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true

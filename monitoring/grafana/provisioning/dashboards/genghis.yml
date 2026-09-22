@@ -1,0 +1,12 @@
+# Auto-load any dashboard JSON found in /var/lib/grafana/dashboards (grafana-dashboard.json is mounted there).
+apiVersion: 1
+providers:
+  - name: GENGHIS
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

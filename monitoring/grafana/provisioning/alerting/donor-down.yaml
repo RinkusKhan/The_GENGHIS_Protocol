@@ -1,0 +1,48 @@
+# GENGHIS alert: fire when a COMPUTE donor drops (genghis_node_up == 0).
+# TURN IT OFF/ON two ways:
+#   - Quick (UI, no restart): Grafana -> Alerting -> Silences -> add a silence matching alertname="GENGHIS donor down"
+#     (remove the silence to turn it back on).
+#   - Declarative: flip `isPaused` below (true = off) and `docker compose restart grafana`.
+# NOTE: firing shows in Grafana -> Alerting -> Alert rules. To actually get PUSHED (email/Slack/Telegram/
+# webhook), add a contact point in Grafana -> Alerting -> Contact points (see monitoring/README.md).
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: fleet
+    folder: GENGHIS
+    interval: 1m
+    rules:
+      - uid: genghis_donor_down
+        title: GENGHIS donor down
+        condition: C
+        for: 2m                       # must stay down ~2 min before firing (rides out a transient blip)
+        isPaused: false               # <-- true = alert OFF
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "A GENGHIS compute donor is down"
+          description: "{{ $labels.name }} ({{ $labels.id }}, role {{ $labels.role }}) has been DOWN for 2m+."
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              range: false
+              editorMode: code
+              expr: 'genghis_node_up{role="compute"}'
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: lt, params: [1] }
+              intervalMs: 1000
+              maxDataPoints: 43200

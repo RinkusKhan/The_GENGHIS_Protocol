@@ -1,0 +1,21 @@
+{
+  "run_id": "2026-09-02T02-48-35_genghis",
+  "strategy": "genghis",
+  "assignments": [
+    {
+      "donor": "pi5-8gb",
+      "share": 0.146,
+      "weighted_by": "throughput/tok_s"
+    },
+    {
+      "donor": "tegra-x1",
+      "share": 0.039,
+      "weighted_by": "throughput/tok_s"
+    },
+    {
+      "donor": "gpu-5060ti",
+      "share": 0.815,
+      "weighted_by": "throughput/tok_s"
+    }
+  ]
+}

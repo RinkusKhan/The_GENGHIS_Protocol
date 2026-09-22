@@ -1,0 +1,16 @@
+# Line endings are part of correctness here: a CRLF .sh breaks bash on a Pi; a LF .ps1 is fine on Windows.
+# Enforced on checkout AND on `git archive` regardless of the contributor's core.autocrlf.
+*            text=auto
+*.sh         text eol=lf
+*.py         text eol=lf
+*.json       text eol=lf
+*.md         text eol=lf
+*.yml        text eol=lf
+*.yaml       text eol=lf
+*.html       text eol=lf
+*.txt        text eol=lf
+*.ps1        text eol=crlf
+*.vbs        text eol=crlf
+*.gguf       binary
+*.svg        text eol=lf
+poc/BUILD export-subst

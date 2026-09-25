@@ -4,6 +4,8 @@
   "description": "Reads and writes code. Prefers the smallest change that works, and says when it is unsure rather than inventing an API.",
 
   "goal": "balanced",
+  "prefer": ["Qwen2.5-Coder-32B-Instruct-Q4_K_M.gguf", "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf"],
+  "_comment_prefer": "A code-trained model first. If none of these is in the library, the goal above picks, and the reply says so. Name the files your own library holds; the first one present that meets `requires` runs.",
 
   "requires": {
     "tools": "native",

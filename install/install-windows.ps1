@@ -25,6 +25,7 @@ param(
   [int]$RpcPort = 50052,          # donor port (with -Donor)
   [string]$Coord = "",            # coordinator host[:port] to pin (else localhost + mDNS)
   [string]$ModelsDir = "",        # where GGUFs live (default: <repo>\poc\models)
+  [string]$Name = "",             # this box's name in the fleet (default: its hostname)
   [switch]$Yes,                   # non-interactive: accept winget installs without prompting
   [switch]$PreflightOnly          # just detect + report prereqs; change nothing (a safe "doctor")
 )
@@ -32,6 +33,10 @@ param(
 # nvcc ... even a friendly "py.exe was updated" notice) into a terminating NativeCommandError. Every step
 # below checks its own result explicitly (Ok / Miss / Die), which is the D18 contract anyway.
 $ErrorActionPreference = "Continue"
+# Python writes UTF-8; Windows PowerShell 5.1 decodes a native program's output with the OEM code page, so dashes and
+# dots arrived as "ΓÇö" in any logged install (a fresh-box test, 2026-09-24).
+try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
+$env:PYTHONIOENCODING = "utf-8"
 $RepoRoot = Split-Path -Parent $PSScriptRoot          # install\ is under the repo root
 $Poc      = Join-Path $RepoRoot "poc"
 $PinCommit = "eab8ee41f889ef7823af517e8098fb8a9b3cf601"
@@ -46,9 +51,18 @@ function Have ($c){ [bool](Get-Command $c -ErrorAction SilentlyContinue) }
 function Native { param([string]$exe, [string[]]$argv)
   try { $o = (& $exe @argv 2>&1 | ForEach-Object { "$_" }) -join "`n"; return $o.Trim() } catch { return "" }
 }
-function Ask  ($m){ if($Yes){return $true}; $r = Read-Host "  $m [y/N]"; return ($r -match '^(y|yes)$') }
+# Nobody at the keyboard (over SSH, or run by an agent): Read-Host returns "" at once and every question silently
+# became "no" (a fresh-box test, 2026-09-23). Say so, and how to consent, instead.
+$Interactive = -not [Console]::IsInputRedirected
+function Ask  ($m){
+  if($Yes){ return $true }
+  if(-not $Interactive){ Write-Host "  [ ?? ] $m -- nobody at the keyboard to answer, so: NO (re-run with -Yes to accept)" -ForegroundColor Yellow; return $false }
+  $r = Read-Host "  $m [y/N]"; return ($r -match '^(y|yes)$')
+}
 
 function Winget-Install($id,$label){
+  # -PreflightOnly promises "change nothing": say what WOULD be installed, never install (not even with -Yes).
+  if($PreflightOnly){ Info "Fix: winget install -e --id $id   ($label)"; return $false }
   if(-not (Have winget)){ Miss "$label missing and winget isn't available -- install $label manually."; return $false }
   if(Ask "install $label (winget $id)?"){
     Say "  installing $label ..."
@@ -59,7 +73,7 @@ function Winget-Install($id,$label){
   return $false
 }
 
-Say "== GENGHIS Windows installer (client$(if($Serve){' + serve'})) =="
+Say "== GENGHIS Windows installer ($((@('client') + @(if($Serve){'serve'}) + @(if($Donor){'donor'})) -join ' + ')) =="
 Say "== 1. Preflight -- what's here, what's missing =="
 
 # --- Python ---
@@ -82,30 +96,65 @@ if($found){ $py = $found[0]; Ok "Python $($found[1]) ($py)" } else {
   $py = $null
   Miss "Python 3 -- no working interpreter found (a bare 'py' launcher / install manager without a runtime does not count)"
   if(Winget-Install "Python.Python.3.12" "Python 3.12"){ $found = Find-Python; if($found){ $py = $found[0]; Ok "Python $($found[1]) ($py)" } }
-  if(-not $py){ Die "Python 3 is required. Install it (winget install -e --id Python.Python.3.12), open a NEW window, and re-run." }
+  # Preflight reports everything missing, not just the first thing (it used to stop here, and Git, CMake and the
+  # C++ tools were never listed).
+  if(-not $py -and -not $PreflightOnly){ Die "Python 3 is required. Install it (winget install -e --id Python.Python.3.12), open a NEW window, and re-run." }
+}
+
+# --- pypdf: reads PDFs attached to a chat and PDFs in a role's knowledge folder (D50). Offered on EVERY Windows install:
+#     a Windows PC is the box a person sits at, and the one most likely to start answering chats later (-Serve). Installed
+#     into $py -- the same Python the serve launcher picks -- because `py` can be a DIFFERENT Python: the reference
+#     laptop's `py -m pip install pypdf` went into 3.13 while its serve runs 3.11. Optional: without it every PDF is
+#     named as unreadable, never skipped quietly. ---
+if($py){
+  if((Native $py @("-c","import pypdf;print('ok')")) -eq "ok"){ Ok "pypdf (PDFs attached to a chat, or in a role's knowledge folder, can be read)" }
+  else {
+    Miss "pypdf -- optional: without it, a PDF attached to a chat or in a role's knowledge folder is not read (and says so)"
+    if($PreflightOnly){ Info "Fix: $py -m pip install pypdf" }
+    elseif(Ask "pip install pypdf (so PDFs in chats and role knowledge can be read)?"){
+      Native $py @("-m","pip","install","--user","pypdf") | Out-Null
+      if((Native $py @("-c","import pypdf;print('ok')")) -eq "ok"){ Ok "installed pypdf" }
+      else { Miss "pip install pypdf did not work -- run it yourself: $py -m pip install pypdf" }
+    }
+  }
 }
 
 # --- Git ---
-if(Have git){ Ok "Git ($((Native git @('--version')) -replace 'git version ',''))" }
-else { Miss "Git -- needed to fetch llama.cpp at the pinned commit"; Winget-Install "Git.Git" "Git" | Out-Null }
+function Show-Git  { Ok "Git ($((Native git @('--version')) -replace 'git version ',''))" }
+function Show-CMake{ Ok "CMake ($(((Native cmake @('--version')) -split "`n" | Select-Object -First 1) -replace 'cmake version ',''))" }
+if(Have git){ Show-Git }
+else { Miss "Git -- needed to fetch llama.cpp at the pinned commit"; if((Winget-Install "Git.Git" "Git") -and (Have git)){ Show-Git } }
 
 # --- CMake ---
-if(Have cmake){ Ok "CMake ($(((Native cmake @('--version')) -split "`n" | Select-Object -First 1) -replace 'cmake version ',''))" }
-else { Miss "CMake -- needed to build llama.cpp"; Winget-Install "Kitware.CMake" "CMake" | Out-Null }
+if(Have cmake){ Show-CMake }
+else { Miss "CMake -- needed to build llama.cpp"; if((Winget-Install "Kitware.CMake" "CMake") -and (Have cmake)){ Show-CMake } }
 
 # --- MSVC C++ toolset (can't be auto-installed reliably -> guide) ---
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-$hasMSVC = $false
-if(Test-Path $vswhere){
+function Find-MSVC {
+  if(-not (Test-Path $vswhere)){ return $null }
   $vc = Native $vswhere @('-latest','-products','*','-requires','Microsoft.VisualStudio.Component.VC.Tools.x86.x64','-property','installationPath')
-  if($vc){ $hasMSVC = $true; Ok "MSVC C++ build tools ($vc)" }
+  if($vc){ return $vc } else { return $null }
 }
-if(-not $hasMSVC){
-  Miss "MSVC C++ build tools -- NOT found (the #1 Windows build snag)"
-  Info "Install 'Visual Studio Build Tools' (or Community) and CHECK the workload:"
-  Info "  ->  'Desktop development with C++'   (that box is what installs cl.exe + the x64 toolset)"
-  Info "  winget install --id Microsoft.VisualStudio.2022.BuildTools -s winget   (then run its installer and tick that workload)"
-  if(-not (Ask "continue anyway (the build step will fail until this is installed)?")){ Die "Install the C++ workload, then re-run." }
+$vc = Find-MSVC; $hasMSVC = [bool]$vc
+if($hasMSVC){ Ok "MSVC C++ build tools ($vc)" }
+else {
+  # Unattended, the workload included: no screen needed (the old advice, "run its installer and tick the workload",
+  # stopped an agent cold, and with -Yes the install carried on without a compiler and built nothing).
+  $vsId = "Microsoft.VisualStudio.2022.BuildTools"
+  $vsOverride = "--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+  Miss "MSVC C++ build tools -- NOT found (needed to build llama.cpp)"
+  if($PreflightOnly){ Info "Fix: winget install -e --id $vsId -s winget --override `"$vsOverride`"   (unattended, ~10 min)" }
+  elseif(-not (Have winget)){ Info "Install 'Visual Studio Build Tools 2022' with the 'Desktop development with C++' workload, then re-run." }
+  elseif(Ask "install the Visual Studio C++ build tools now (unattended, about 10 minutes and a few GB)?"){
+    Say "  installing the C++ build tools (unattended; this takes a while) ..."
+    winget install -e --id $vsId -s winget --accept-source-agreements --accept-package-agreements --override $vsOverride | Out-Null
+    $vc = Find-MSVC; $hasMSVC = [bool]$vc
+    if($hasMSVC){ Ok "MSVC C++ build tools ($vc)" } else { Miss "the build tools install did not finish -- see above" }
+  }
+  if(-not $hasMSVC -and -not $PreflightOnly){
+    Die "the C++ build tools are required to build llama.cpp. Install them (winget install -e --id $vsId -s winget --override `"$vsOverride`"), then re-run."
+  }
 }
 
 # --- Accelerator: CUDA? Vulkan? else CPU ---
@@ -139,10 +188,28 @@ if($accel -ne "cuda" -and $otherGpu){
 if($accel -eq "cpu"){ Info "No usable GPU toolchain detected -- will build the CPU + RPC path (still a full client / donor)." }
 
 if($PreflightOnly){
+  $role = (@('client') + @(if($Serve){'serve'}) + @(if($Donor){'donor'})) -join ' + '
+  # Everything the real run will change on this box, so a person saying "yes" (-Yes) has seen it first.
+  if($Coord){
+    $ch = ($Coord -split ':')[0]
+    $up = try { $c = New-Object Net.Sockets.TcpClient; $r = $c.ConnectAsync($ch, 8899).Wait(2000); $c.Close(); $r } catch { $false }
+    if($up){ Ok "the authority answers at ${ch}:8899" } else { Miss "the authority at ${ch}:8899 does not answer -- check the address and that its serve runs" }
+  }
+  if($Donor){
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    $prof = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue | ForEach-Object { "$($_.InterfaceAlias): $($_.NetworkCategory)" }) -join ', '
+    Say ""
+    Say "  The real run will also, for the donor:"
+    Info ("  - start ggml-rpc-server on :$RpcPort now, and " + $(if($accel -eq 'cpu' -and $isAdmin){ "at every boot (a scheduled task as SYSTEM; a CPU donor needs no login)" } else { "at every logon (a Startup entry)" }))
+    Info "  - open TCP $RpcPort in Windows Firewall for this local network only, every profile (this network: $prof):"
+    Info "      New-NetFirewallRule -DisplayName 'GENGHIS rpc-server $RpcPort' -Direction Inbound -Action Allow -Protocol TCP -LocalPort $RpcPort -Profile Any -RemoteAddress LocalSubnet"
+    Info "  - register this box's port with the authority, which then dials it"
+    if(-not $isAdmin){ Miss "not running as administrator: the C++ tools install and the firewall rule need it" }
+  }
   Say ""
   Say "== Preflight only -- no changes made. =="
   $ready = $py -and $hasMSVC -and (Test-Path (Join-Path $Poc 'genghis_coordinator.py'))
-  if($ready){ Ok "ready to build + run the client role (accelerator: $accel)" } else { Miss "install the missing items above, then re-run without -PreflightOnly" }
+  if($ready){ Ok "ready to build + set up: $role (accelerator: $accel)" } else { Miss "the missing items above will be installed by the real run (they need your yes, or -Yes), or install them yourself" }
   exit 0
 }
 
@@ -161,10 +228,15 @@ if(Test-Path (Join-Path $Llama ".git")){
   $at = Native git @('-C',$Llama,'rev-parse','HEAD')
   if($at -and $at -ne $PinCommit){ Miss "checkout is at $($at.Substring(0,9)), NOT the pinned $($PinCommit.Substring(0,9)) -- RPC has zero cross-version tolerance; run: git -C `"$Llama`" checkout $PinCommit" }
 } else {
-  if(Ask "clone llama.cpp into $Llama at the pinned commit?"){
-    git clone https://github.com/ggerganov/llama.cpp $Llama
-    Push-Location $Llama; git fetch --depth 1 origin $PinCommit; git checkout $PinCommit; Pop-Location
-    Ok "cloned + checked out $PinCommit"
+  if(Ask "fetch llama.cpp into $Llama at the pinned commit?"){
+    # Only the pinned commit, not the whole history (a full clone first cost minutes and hundreds of MB for nothing).
+    New-Item -ItemType Directory -Force $Llama | Out-Null
+    git -C $Llama init -q
+    git -C $Llama remote add origin https://github.com/ggml-org/llama.cpp 2>$null
+    git -C $Llama fetch --depth 1 origin $PinCommit
+    git -C $Llama checkout -q FETCH_HEAD
+    if((Native git @('-C',$Llama,'rev-parse','HEAD')) -eq $PinCommit){ Ok "fetched + checked out $PinCommit" }
+    else { Die "could not fetch llama.cpp at $PinCommit -- check the internet connection and re-run." }
   } else { Info "skipped -- the build step needs it." }
 }
 
@@ -203,6 +275,10 @@ if($hasMSVC -and (Test-Path $Llama)){
     }
   }
 } else { Miss "skipping build -- need the C++ workload + llama.cpp source above first." }
+# A donor lends through ggml-rpc-server; without it the install is not a donor, whatever else went right. It used to carry
+# on, register with no port, and end in a passing verify (a fresh-box test, 2026-09-23).
+$RpcExe = Get-ChildItem (Join-Path $Llama "build-*\bin\Release\ggml-rpc-server.exe") -ErrorAction SilentlyContinue | Select-Object -First 1
+if($Donor -and -not $RpcExe){ Die "a donor needs ggml-rpc-server.exe, and the build above did not produce it -- read the build output, fix it, and re-run." }
 
 # --- First-run fleet (genghis init) ---
 Say "== 4. Generate THIS machine's fleet (genghis init -- ships nothing of anyone else's) =="
@@ -210,8 +286,9 @@ if($py -and (Test-Path (Join-Path $Poc "genghis_coordinator.py"))){
   $initArgs = @("genghis_coordinator.py","init","--yes")
   if($Coord){ $initArgs += @("--coord",$Coord) }
   if($ModelsDir){ $initArgs += @("--models-dir",$ModelsDir) }
+  if($Name){ $initArgs += @("--node-name",$Name) }
   Push-Location $Poc; & $py @initArgs; $rc = $LASTEXITCODE; Pop-Location
-  if($rc -eq 0){ Ok "wrote poc\fleet.json + poc\config.json for $(hostname)" } else { Miss "genghis init exited with code $rc -- see its output above" }
+  if($rc -eq 0){ Ok "wrote poc\fleet.json + poc\config.json for $(if($Name){ $Name } else { hostname })" } else { Miss "genghis init exited with code $rc -- see its output above" }
   if($Coord){ [Environment]::SetEnvironmentVariable("GENGHIS_COORD",$Coord,"User"); $env:GENGHIS_COORD = $Coord; Ok "pinned GENGHIS_COORD=$Coord (user env; also set for this session)" }
 } else { Miss "genghis_coordinator.py not found under $Poc -- copy the repo's poc\ folder here." }
 
@@ -244,25 +321,71 @@ if($Serve){
 
 # --- Optional: reboot-proof RPC donor (lend this box's GPU/CPU to the pool) ---
 if($Donor){
-  Say "== 6. Reboot-proof RPC donor (ggml-rpc-server on 0.0.0.0:$RpcPort, no-admin Startup launcher) =="
+  Say "== 6. The RPC donor (ggml-rpc-server on 0.0.0.0:$RpcPort), started now and after every reboot =="
   $launcher = Join-Path $Poc "rpc-serve-windows.ps1"
   if(Test-Path $launcher){
-    $s = [Environment]::GetFolderPath('Startup')
-    $vbs = Join-Path $s 'GENGHIS-rpc.vbs'
-    $cmd = 'CreateObject("WScript.Shell").Run "powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File ""'+$launcher+'"" -Port '+$RpcPort+'", 0, False'
-    Set-Content $vbs $cmd -Encoding ASCII
-    Ok "installed Startup launcher -> ggml-rpc-server auto-starts at logon ($vbs)"
-    Info "start it now: wscript `"$vbs`"   -   it registers itself with the coordinator (D33) once the rpc-server is up: py genghis_coordinator.py register"
-    Info "NOTE: the GPU needs a user session -> for a headless box enable auto-login (Sysinternals Autologon)."
-    if(-not (Get-NetFirewallRule -DisplayName "GENGHIS rpc-server" -ErrorAction SilentlyContinue)){
-      Info "firewall: allow inbound TCP $RpcPort from the LAN (admin PowerShell):"
-      Info "  New-NetFirewallRule -DisplayName 'GENGHIS rpc-server' -Direction Inbound -Action Allow -Protocol TCP -LocalPort $RpcPort -Profile Private"
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    $launchArgs = "-Port $RpcPort" + $(if($py){ " -Python `"$py`"" } else { "" }) + $(if($Coord){ " -Coord `"$Coord`"" } else { "" })
+    $taskName = "GENGHIS rpc-server $RpcPort"
+    $vbs = Join-Path ([Environment]::GetFolderPath('Startup')) 'GENGHIS-rpc.vbs'
+    function PortListening($p){ [bool](Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction SilentlyContinue) }
+    if($accel -eq "cpu" -and $isAdmin){
+      # A CPU donor needs no desktop session: a scheduled task at BOOT, as SYSTEM, lends again after a reboot with nobody
+      # logged in. (Only a Startup entry used to exist, so a rebooted headless CPU donor sat idle until someone logged on.)
+      $act  = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$launcher`" $launchArgs"
+      $trig = New-ScheduledTaskTrigger -AtStartup
+      $prin = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+      $set  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+      Register-ScheduledTask -TaskName $taskName -Action $act -Trigger $trig -Principal $prin -Settings $set -Force | Out-Null
+      if(Test-Path $vbs){ Remove-Item $vbs -Force }          # one way to start it, not two
+      Ok "scheduled task '$taskName': the donor starts at boot, no login needed"
+      if(-not (PortListening $RpcPort)){ Start-ScheduledTask -TaskName $taskName }
+    } else {
+      # A GPU needs a user session (session 0 can't reach it): a Startup entry, which runs at logon.
+      $cmd = 'CreateObject("WScript.Shell").Run "powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File ""'+$launcher+'"" '+($launchArgs -replace '"','""')+'", 0, False'
+      Set-Content $vbs $cmd -Encoding ASCII
+      Ok "installed Startup launcher -> the donor starts at logon ($vbs)"
+      if($accel -eq "cpu"){ Info "run this installer as administrator to make it start at boot instead (a CPU donor needs no login)" }
+      else { Info "NOTE: a GPU needs a logged-in session -> for a headless box enable auto-login (Sysinternals Autologon)." }
+      # Start it NOW, through WMI, so it outlives this window -- and an SSH session, whose processes Windows ends when it
+      # closes (a `wscript` started over SSH died with it, 2026-09-23). The launcher holds a per-port lock, so the copy the
+      # Startup entry starts at next logon cannot run a second server beside this one.
+      if(-not (PortListening $RpcPort)){ Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "wscript.exe `"$vbs`"" } | Out-Null }
+    }
+    for($i = 0; $i -lt 60 -and -not (PortListening $RpcPort); $i++){ Start-Sleep 1 }
+    if(PortListening $RpcPort){ Ok "ggml-rpc-server listening on :$RpcPort" }
+    else { Miss "ggml-rpc-server did not start listening on :$RpcPort within a minute -- see $Poc\rpc-serve.log" }
+
+    # The fleet has to be able to reach it. A fresh Windows network is usually classed PUBLIC, so a Private-only rule
+    # (the old advice) does not apply; this one covers every profile but only this LAN.
+    $fw = "GENGHIS rpc-server $RpcPort"
+    $fwCmd = "New-NetFirewallRule -DisplayName '$fw' -Direction Inbound -Action Allow -Protocol TCP -LocalPort $RpcPort -Profile Any -RemoteAddress LocalSubnet"
+    $old = Get-NetFirewallRule -DisplayName "GENGHIS rpc-server" -ErrorAction SilentlyContinue   # an earlier install's rule
+    if(Get-NetFirewallRule -DisplayName $fw -ErrorAction SilentlyContinue){ Ok "firewall: TCP $RpcPort already allowed from this network" }
+    elseif($old -and ($old.Profile -eq 'Any')){ Ok "firewall: TCP $RpcPort already allowed ('GENGHIS rpc-server')" }
+    else {
+      if($isAdmin -and (Ask "open TCP $RpcPort in Windows Firewall, for this local network only, so the fleet can use this box?")){
+        Invoke-Expression "$fwCmd | Out-Null"
+        Ok "firewall: TCP $RpcPort allowed from this local network (every network profile)"
+      } else {
+        Miss "firewall: the fleet cannot reach this donor until TCP $RpcPort is allowed. Run once in an ADMIN PowerShell:"
+        Info "  $fwCmd"
+      }
+    }
+
+    # Tell the authority the port NOW that the server is up (init, above, ran before it was). The authority dials it
+    # and says at once if it cannot reach it.
+    if($py){
+      $regArgs = @("genghis_coordinator.py","register","--port","$RpcPort")
+      if($Coord){ $regArgs += @("--coord",$Coord) }
+      Push-Location $Poc; & $py @regArgs; Pop-Location
     }
   } else { Miss "rpc-serve-windows.ps1 not found -- copy it into poc\ (or run ggml-rpc-server manually)." }
 }
 
 # --- Starter model: end the install READY to chat (D28) ---
-if($py -and $Coord -and (Test-Path (Join-Path $Poc "genghis_coordinator.py"))){
+if($py -and $Coord -and ($Serve -or -not $Donor) -and (Test-Path (Join-Path $Poc "genghis_coordinator.py"))){
+  # (Not for a pure donor: it runs no chats of its own, and the 1.1 GB download was pure waste.)
   Say "== 7. Starter model =="
   $starter = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
   $modelsDir = if($ModelsDir){ $ModelsDir } else { Join-Path $Poc "models" }
@@ -274,6 +397,21 @@ if($py -and $Coord -and (Test-Path (Join-Path $Poc "genghis_coordinator.py"))){
 }
 
 Say ""
-Say "== Done. =="
+Say "== Installed. Full guide: INSTALL.md =="
 Info "Next: put GGUFs in your models folder, then:  cd $Poc ;  $py genghis_coordinator.py decide --goal fastest"
-Info "Control Room (if serving): http://localhost:8899/   -   full guide: INSTALL.md"
+
+# The finish line: an install is done when `verify` passes, not when this script reaches its last line. verify is
+# read-only; it prints what it checked (with the fix for anything that failed) and the addresses worth bookmarking
+# (real LAN / Tailscale addresses that answered -- never "localhost"), saved to %USERPROFILE%\genghis-addresses.txt.
+# Its exit code becomes ours, so a script or an agent can gate on it.
+function PortUp($h, $p){ try { $c = New-Object Net.Sockets.TcpClient; $ok = $c.ConnectAsync($h, $p).Wait(1000); $c.Close(); $ok } catch { $false } }
+$rc = 0
+if($py -and (Test-Path (Join-Path $Poc "genghis_coordinator.py"))){
+  $waitFor = if($Coord){ ($Coord -split ':')[0] } elseif($Serve){ "127.0.0.1" } else { $null }
+  if($waitFor){ for($i = 0; $i -lt 20; $i++){ if(PortUp $waitFor 8899){ break }; Start-Sleep 1 } }   # a just-started serve needs a moment
+  Say ""
+  Say "== Verify: is this box really in the fleet? (read-only; re-run any time: cd $Poc ; $py genghis_coordinator.py verify) =="
+  $vArgs = @("genghis_coordinator.py","verify"); if($Donor){ $vArgs += "--expect-donor" }   # a donor with no port FAILs
+  Push-Location $Poc; & $py @vArgs; $rc = $LASTEXITCODE; Pop-Location
+} else { Info "verify skipped (Python or poc\genghis_coordinator.py missing)" }
+exit $rc

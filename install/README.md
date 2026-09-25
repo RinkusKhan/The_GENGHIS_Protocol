@@ -59,7 +59,8 @@ install/install-linux.sh --role coordinator                   # the always-on au
 It preflights python3 / git / build tools / the accelerator, offers `apt` installs, then hands the donor
 build to the pinned `donor-setup-*.sh` (reboot-proof + self-report wired in), or for a coordinator runs
 `genghis init` + starts `serve` with a `@reboot` cron. `--preflight` checks without changing anything;
-`--yes` accepts apt installs.
+`--yes` accepts apt installs (run without a terminal, the installer can't ask, so it answers **no** and says so:
+re-run with `--yes` once the person agrees); `--name NAME` sets the box's name in the fleet (default: its hostname).
 
 **GPU device groups (Vulkan / Arc / AMD — anything that opens `/dev/dri`):** the preflight checks that you are in
 the groups that own `/dev/dri/renderD*` / `card*` (`render`, `video` on Ubuntu) and offers `sudo usermod -aG`. It

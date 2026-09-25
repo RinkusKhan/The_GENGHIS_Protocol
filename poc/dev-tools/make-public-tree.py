@@ -31,7 +31,8 @@ DROP = [
     "poc/RESULTS.md", "poc/coordinator-notes.md",
     "docs/PUBLIC_RELEASE.md",
 ]
-RENAME = [("DECISIONS-public.md", "DECISIONS.md")]     # generated -> the name the docs link to
+RENAME = [("DECISIONS-public.md", "DECISIONS.md"),    # generated -> the name the docs link to
+          ("poc/RESULTS-public.md", "poc/RESULTS.md")]  # the evidence behind the README's numbers ships too
 
 
 def run(cmd, cwd=None):
@@ -83,13 +84,13 @@ def transform_readme(path):
     keep = []
     for ln in rows:
         if ln.startswith("|") and re.search(r"\]\((STATUS\.md|DECISIONS-public\.md|docs/PUBLIC_RELEASE\.md|"
-                                            r"poc/RESULTS\.md|poc/coordinator-notes\.md)\)", ln):
+                                            r"poc/coordinator-notes\.md)\)", ln):
             continue
         keep.append(ln)
     s = "\n".join(keep)
 
     # 3. remaining inline links to non-shipping files -> keep the words, drop the link
-    s = re.sub(r"\[([^\]]+)\]\((?:STATUS\.md|poc/RESULTS\.md|poc/coordinator-notes\.md|"
+    s = re.sub(r"\[([^\]]+)\]\((?:STATUS\.md|poc/coordinator-notes\.md|"
                r"docs/PUBLIC_RELEASE\.md|Support/)\)", r"\1", s)
     # the live fleet file is git-ignored; the example is what ships
     s = s.replace("[`poc/fleet.json`](poc/fleet.json)", "[`poc/fleet.example.json`](poc/fleet.example.json)")
@@ -176,7 +177,7 @@ def main():
     print("== transforms ==")
     if transform_readme(os.path.join(outdir, "README.md")):
         print("  README.md: private-preview notice removed, journal rows dropped, dead links unlinked")
-    nonship = ["STATUS.md", "poc/RESULTS.md", "poc/coordinator-notes.md", "docs/PUBLIC_RELEASE.md", "Support/"]
+    nonship = ["STATUS.md", "poc/coordinator-notes.md", "docs/PUBLIC_RELEASE.md", "Support/"]
     for rel in ("CHANGELOG.md", "DECISIONS.md", os.path.join("docs", "COMMANDS.md")):
         p = os.path.join(outdir, rel)
         if os.path.exists(p) and strip_links(p, nonship):
@@ -194,7 +195,7 @@ def main():
     # A transform that silently matches nothing is worse than no transform: the tree looks clean and still
     # tells the reader it is somebody's private working copy. Assert the removals actually happened.
     rd = io.open(os.path.join(outdir, "README.md"), encoding="utf-8", errors="replace").read()
-    stale = [p for p in ("Private preview", "](STATUS.md)", "](poc/RESULTS.md)",
+    stale = [p for p in ("Private preview", "](STATUS.md)",
                          "](docs/PUBLIC_RELEASE.md)", "](poc/coordinator-notes.md)") if p in rd]
     print("  README leftovers   : %s" % (", ".join(stale) if stale else "none"))
     ok &= not stale

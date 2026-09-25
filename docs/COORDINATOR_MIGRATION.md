@@ -32,7 +32,7 @@ shows **this** box only. That is expected — it has its own fresh `fleet.json`.
 ```bash
 # on the NEW box — pull from the old one (adjust user/host)
 OLD=<old-user>@<old-ip>
-systemctl --user stop genghis-serve 2>/dev/null || pkill -f "^python3 genghis_coordinator.py serve"   # stop OUR serve while we swap files
+systemctl --user stop genghis-serve 2>/dev/null || pkill -f 'genghis_coordinator[.]py serve'   # stop OUR serve while we swap files ([.]: never matches this shell)
 scp $OLD:~/genghis/fleet.json  ~/genghis/fleet.json
 scp $OLD:~/genghis/config.json ~/genghis/config.json
 scp $OLD:~/genghis/hearth_*    ~/genghis/ 2>/dev/null
@@ -116,8 +116,9 @@ any `GENGHIS_COORD` you changed. Donors never cared which box was the authority.
   own `donor-report.sh` cron at *itself*. Then add the **watchdog** cron here (`*/15 * * * * python3 …/watchdog.py`)
   and remove it from the old box — the "verified HH:MM" line follows the authority.
 - **Kill precisely over SSH.** `pkill -f "genghis_coordinator.py serve"` matches the SSH shell that runs it and kills
-  your own session. Use anchored patterns: `pgrep -f "^/usr/bin/python3 -u genghis_coordinator.py serve"`,
-  `"^/bin/bash …/serve.sh$"`. Also kill an orphaned resident `llama-server` (port 8081) so the new serve starts clean.
+  your own session. Use `pkill -f 'genghis_coordinator[.]py serve'`: `[.]` still matches the serve, but never the
+  shell running the command. (Anchored `^/usr/bin/python3 …` patterns break the moment the interpreter path or its
+  flags differ, and then match nothing at all.) Also kill an orphaned resident `llama-server` (port 8081) so the new serve starts clean.
 - **Windows host:** `[Environment]::SetEnvironmentVariable("GENGHIS_COORD", "<new-ip>", "User")` is not enough — the
   running `serve-laptop.ps1` loop inherited the old env at logon. Stop the loop *and* its python child, then
   `Start-Process` the launcher from a shell that has the new value set.

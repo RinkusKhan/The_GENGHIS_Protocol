@@ -10,7 +10,7 @@ AI demand is pulling DRAM, HBM, and VRAM into datacenters; memory is scarce and 
 The conventional answer to "I need more memory to run a bigger model" is **buy more** — into a
 shortage. GENGHIS answers differently: **you already own the memory — it's scattered across
 idle devices in your home.** Instead of purchasing scarce new RAM, pool the RAM you already have
-(a Pi, a phone, an old GPU box, a tablet) so a modest client can run a model it could never hold
+(a Pi, an old GPU box, a mini-PC — and, not yet measured, phones and tablets) so a modest client can run a model it could never hold
 alone. Reclaiming idle, already-owned memory is the near-opposite of the buy-more arms race — and
 it is the sharpest statement of what this project brings to the sector.
 

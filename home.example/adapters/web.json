@@ -1,0 +1,46 @@
+{
+  "id": "web",
+  "name": "Web",
+  "description": "Search the public web and read pages, run by GENGHIS itself. Two operations and no others.",
+  "enabled": false,
+  "_comment_enabled": "OFF as shipped. Switching it on sends the model's search queries to DuckDuckGo from the box that runs the role, and lets it read any public page. Set it to true when you want a role that looks things up.",
+  "transport": "web",
+  "timeout": 30,
+  "_comment_safety": "Reads the PUBLIC internet only: an address on a private, loopback or link-local network is refused before the request and at every redirect, so a page cannot point it at your router or at GENGHIS itself. Page text is handed to the model marked as material to weigh, not instructions. Searches go to DuckDuckGo (and Wikipedia as a fallback) from the box running the role.",
+  "operations": {
+    "search": {
+      "description": "Search the public web (DuckDuckGo; Wikipedia if DuckDuckGo gives nothing). Returns titles, addresses and snippets. Search first, then read the pages worth citing.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "What to search for, in the words a good source would use."
+          },
+          "max_results": {
+            "type": "integer",
+            "description": "How many results, 1 to 8. Default 5."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    "read_page": {
+      "description": "Read one public web page or PDF and return its text (up to about 9,000 characters). Use it on a search result before citing it; a snippet is not a source.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The full http(s) address, exactly as a search result gave it."
+          }
+        },
+        "required": [
+          "url"
+        ]
+      }
+    }
+  }
+}

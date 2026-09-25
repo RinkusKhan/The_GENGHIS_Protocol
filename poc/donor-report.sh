@@ -29,14 +29,33 @@ while true; do
   total_mb=$(awk '/MemTotal/{printf "%d",$2/1024}' /proc/meminfo)
   payload="{\"id\":\"$ID\",\"ram_free_mb\":$free_mb,\"ram_total_mb\":$total_mb"
 
-  # If this donor has an NVIDIA GPU, also report live VRAM (free_mem_mb uses vram_total_mb for cuda).
-  if command -v nvidia-smi >/dev/null 2>&1; then
-    vram_total=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -dc '0-9')
+  # VRAM describes ONE card, so report it only for the NVIDIA device THIS node lends: GENGHIS_RPC_DEVICE=CUDAn picks
+  # it (unset = card 0, the single-card box); a Vulkan or CPU device reports none. Asking nvidia-smi regardless is how
+  # the NUC's Arc node was credited with its eGPU's 16 GB. (The authority also refuses a VRAM total for a non-CUDA
+  # node, and trusts the device's own answer over any report -- D51 -- so an old copy of this script is harmless.)
+  case "${GENGHIS_RPC_DEVICE:-}" in
+    CUDA*) gpu_idx="${GENGHIS_RPC_DEVICE#CUDA}";;
+    "")    gpu_idx=0;;
+    *)     gpu_idx="";;
+  esac
+  if [ -n "$gpu_idx" ] && command -v nvidia-smi >/dev/null 2>&1; then
+    vram_total=$(nvidia-smi -i "$gpu_idx" --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -dc '0-9')
     [ -n "$vram_total" ] && payload="$payload,\"vram_total_mb\":$vram_total"
   fi
   payload="$payload}"
 
-  curl -s --max-time 5 -X POST "http://$COORD/report" \
-       -H "Content-Type: application/json" -d "$payload" >/dev/null 2>&1
+  # Say when the authority REJECTS the report (HTTP 400 = it knows no node called "$ID"): the output used to go to
+  # /dev/null, so a box reporting under the wrong name looked fine forever while every report was thrown away
+  # (a fresh-box test, 2026-09-23). Logged when the state CHANGES, not every 30 s.
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST "http://$COORD/report" \
+       -H "Content-Type: application/json" -d "$payload" 2>/dev/null)
+  if [ "$code" != "${last_code:-}" ]; then
+    case "$code" in
+      200) echo "[$(date '+%F %T')] donor-report: reporting as '$ID' to $COORD";;
+      400) echo "[$(date '+%F %T')] donor-report: the authority at $COORD knows no node '$ID' -- reports are rejected. Run 'genghis_coordinator.py verify' on this box: it shows the name the fleet uses, and restart this reporter with it.";;
+      *)   echo "[$(date '+%F %T')] donor-report: could not reach $COORD (HTTP ${code:-none}) -- retrying every ${EVERY}s";;
+    esac
+    last_code="$code"
+  fi
   sleep "$EVERY"
 done

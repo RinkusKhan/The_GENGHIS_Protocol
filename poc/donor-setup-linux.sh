@@ -18,9 +18,19 @@ WORKDIR="${WORKDIR:-$HOME/genghis}"
 echo "==> GENGHIS donor setup on $(hostname) ($(uname -m)), ${JOBS} cores"
 
 # 1. Toolchain
+# Only what is MISSING, and say what and why: a fresh-box test found this installing 39 packages with sudo, unannounced,
+# two of them never used (libcurl dev: the build sets -DLLAMA_CURL=OFF; pip: only the old-cmake fallback below needs
+# it, and installs it there). The installer's preflight offers the same packages first, so normally this is a no-op.
 if command -v apt-get >/dev/null 2>&1; then
-  sudo apt-get update
-  sudo apt-get install -y build-essential cmake git libcurl4-openssl-dev python3-pip
+  NEED=""
+  for p in build-essential cmake git; do dpkg -s "$p" >/dev/null 2>&1 || NEED="$NEED $p"; done
+  if [ -n "$NEED" ]; then
+    echo "==> installing the build tools this donor needs:$NEED  (sudo apt-get install)"
+    sudo apt-get update
+    sudo apt-get install -y $NEED
+  else
+    echo "==> build tools present (build-essential, cmake, git) -- nothing to install"
+  fi
 fi
 
 # 1b. cmake version guard — llama.cpp needs cmake >= 3.14. Old distros (e.g. JetPack/Ubuntu 18.04
@@ -92,16 +102,23 @@ echo "==> (also saved to ${INFO} — cat it any time)"
 
 # 5. Serve — DETACHED so closing your SSH session does NOT kill the donor.
 #    -H 0.0.0.0 exposes on the LAN; -c enables the on-disk tensor cache.
-SESSION="genghis"
-if command -v tmux >/dev/null 2>&1; then
-  tmux kill-session -t "$SESSION" 2>/dev/null || true
-  tmux new-session -d -s "$SESSION" "'$BIN' -H 0.0.0.0 -p '${RPC_PORT}' -c"
-  echo "==> Serving in tmux session '${SESSION}' (survives disconnect)."
-  echo "    view logs : tmux attach -t ${SESSION}   (detach: Ctrl-b then d)"
-  echo "    stop      : tmux kill-session -t ${SESSION}"
-  echo "    check     : pgrep -af ggml-rpc-server"
+# ONE launcher serves ggml-rpc-server: donor-serve.sh (one instance per port, restarts on crash, the same thing the
+# @reboot cron runs). This script used to start its own copy in tmux as well, and a fresh-box test found the two
+# fighting over the port, the one actually serving unsupervised (2026-09-23). GENGHIS_NO_START=1 (the installer sets it)
+# means: build only; the caller starts donor-serve.sh.
+SERVE_SH=""
+for s in "$(cd "$(dirname "$0")" && pwd)/donor-serve.sh" "${WORKDIR}/donor-serve.sh" "$HOME/genghis-src/poc/donor-serve.sh"; do
+  [ -f "$s" ] && { SERVE_SH="$s"; break; }
+done
+if [ "${GENGHIS_NO_START:-0}" = 1 ]; then
+  echo "==> Built. Not starting a server here: the installer starts donor-serve.sh."
+elif [ -n "$SERVE_SH" ]; then
+  GENGHIS_RPC_BIN="$BIN" GENGHIS_RPC_PORT="$RPC_PORT" setsid nohup bash "$SERVE_SH" >/dev/null 2>&1 < /dev/null &
+  sleep 3
+  echo "==> Serving on :${RPC_PORT} via $SERVE_SH (restarts on crash; log: $HOME/genghis/rpc.log)"
+  echo "    survive reboots: ( crontab -l 2>/dev/null | grep -v donor-serve.sh; echo \"@reboot GENGHIS_RPC_BIN=$BIN bash $SERVE_SH >/dev/null 2>&1\" ) | crontab -"
+  echo "    check: pgrep -af ggml-rpc-server"
 else
-  echo "==> tmux not found; running with nohup (logs: ${WORKDIR}/rpc.log)"
+  echo "==> donor-serve.sh not found next to this script -- starting the server directly (it will NOT restart on a crash)"
   nohup "$BIN" -H 0.0.0.0 -p "${RPC_PORT}" -c > "${WORKDIR}/rpc.log" 2>&1 &
-  echo "    stop  : pkill -f ggml-rpc-server"
 fi

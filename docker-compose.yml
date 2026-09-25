@@ -24,7 +24,7 @@ x-genghis-labels: &genghis-labels
 
 services:
   open-webui:
-    image: ghcr.io/open-webui/open-webui:v0.11.3   # pinned (D18)
+    image: ghcr.io/open-webui/open-webui:v0.11.4   # pinned (D18)
     container_name: open-webui
     labels:
       <<: *genghis-labels

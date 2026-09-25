@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Generate the PUBLIC decision log from the private one (D22 · D36).
+"""Generate the PUBLIC decision log and results ledger from the private ones (D22 · D36).
+
+(Both, despite the file name: `poc/RESULTS.md` -> `poc/RESULTS-public.md` goes through exactly the same
+redaction. The ledger is the evidence behind the README's numbers, so it has to ship too.)
 
 `DECISIONS.md` is the most valuable document in this repo for someone who did not build it — it is the *why*
 behind every rule the code enforces — and it is also the file that names the reference lab throughout. So the
@@ -147,42 +150,78 @@ def redact(text, rules, words):
     return text
 
 
-def build():
-    with open(SRC, encoding="utf-8") as f:
+# The run ledger is the evidence behind every number on the README's front page. It names the lab the same way
+# the decision log does, so it gets the same treatment: generated beside its source, renamed into place by
+# make-public-tree.py, and never hand-edited.
+RESULTS_SRC = os.path.join(ROOT, "poc", "RESULTS.md")
+RESULTS_OUT = os.path.join(ROOT, "poc", "RESULTS-public.md")
+RESULTS_HEADER = """<!-- GENERATED — do not edit by hand.
+     Source: the project's private poc/RESULTS.md; generator: poc/dev-tools/make-public-decisions.py
+     Regenerate after every run:  python3 poc/dev-tools/make-public-decisions.py -->
+
+# GENGHIS — Results Ledger (public)
+
+Every logged experiment and its numbers, in the order they were run on the maintainer's reference fleet. This is
+the evidence behind the figures in [README.md](../README.md); the machine-readable version is
+[`runs.jsonl`](runs.jsonl), with the plans in [`plans/`](plans/).
+
+The reference lab's addresses and private names are redacted; device-class node ids (`pi5-8gb`, `gpu-5060ti`,
+`tegra-x1`) stay, because they are what the numbers were measured on. Nothing else is removed, **including the
+failures**: the OOMs, the estimator bugs and the runs that went slower are in here on purpose.
+
+---
+
+"""
+
+TARGETS = [  # (source, output, header, how to strip the private title, what to count, noun)
+    (SRC, OUT, HEADER, "rule", "\n## D", "decisions", "decision log"),
+    (RESULTS_SRC, RESULTS_OUT, RESULTS_HEADER, "title", "\n## Run #", "runs", "results ledger"),
+]
+
+
+def build(src, header, strip, label):
+    with open(src, encoding="utf-8") as f:
         body = f.read()
-    # drop the private header (everything before the first ---) and re-title
-    i = body.find("\n---\n")
-    body = body[i + 5:] if i != -1 else body
+    if strip == "rule":
+        # drop the private header (everything before the first ---) and re-title
+        i = body.find("\n---\n")
+        body = body[i + 5:] if i != -1 else body
+    else:
+        # the ledger has no private preamble -- only its own "# ..." title, which the public header replaces
+        body = re.sub(r"\A\s*# [^\n]*\n", "", body)
     rules, words = load_map(), load_words()
     if rules is None:
         print(f"note: no {HOME}/REDACTIONS.tsv — names will fall back to <redacted> (readable prose needs the map)",
               file=sys.stderr)
-    out = HEADER + redact(body, rules, words).lstrip("\n")
-    out = out.rstrip("\n") + f"\n\n---\n_Generated from the project's private decision log on {datetime.date.today().isoformat()}._\n"
+    out = header + redact(body, rules, words).lstrip("\n")
+    out = out.rstrip("\n") + f"\n\n---\n_Generated from the project's private {label} on {datetime.date.today().isoformat()}._\n"
     return out
 
 
 def main():
-    text = build()
-    if "--check" in sys.argv:
-        try:
-            with open(OUT, encoding="utf-8") as f:
-                cur = f.read()
-        except OSError:
-            cur = ""
-        # ignore only the trailing generation date
-        strip = lambda s: re.sub(r"_Generated from .*_\n?$", "", s).rstrip()
-        if strip(cur) != strip(text):
-            print(f"{os.path.relpath(OUT, ROOT)} is OUT OF DATE — run: python3 poc/dev-tools/make-public-decisions.py")
-            return 1
-        print(f"{os.path.relpath(OUT, ROOT)} is up to date.")
-        return 0
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    with open(OUT, "w", encoding="utf-8", newline="") as f:
-        f.write(text)
-    n = text.count("\n## D")
-    print(f"wrote {os.path.relpath(OUT, ROOT)} — {n} decisions, {len(text.splitlines())} lines")
-    return 0
+    rc = 0
+    for src, out, header, strip, marker, noun, label in TARGETS:
+        text = build(src, header, strip, label)
+        rel = os.path.relpath(out, ROOT)
+        if "--check" in sys.argv:
+            try:
+                with open(out, encoding="utf-8") as f:
+                    cur = f.read()
+            except OSError:
+                cur = ""
+            # ignore only the trailing generation date
+            norm = lambda s: re.sub(r"_Generated from .*_\n?$", "", s).rstrip()
+            if norm(cur) != norm(text):
+                print(f"{rel} is OUT OF DATE — run: python3 poc/dev-tools/make-public-decisions.py")
+                rc = 1
+            else:
+                print(f"{rel} is up to date.")
+            continue
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+        print(f"wrote {rel} — {text.count(marker)} {noun}, {len(text.splitlines())} lines")
+    return rc
 
 
 if __name__ == "__main__":

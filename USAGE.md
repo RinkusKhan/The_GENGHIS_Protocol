@@ -11,7 +11,7 @@ Day-to-day use, once your fleet is installed ([INSTALL.md](INSTALL.md)). Full co
 ## Run a model across the fleet
 ```powershell
 $env:GENGHIS_MODEL = "E:\models\<model>.gguf"   # a full path…
-# …or just a NAME that lives in the Pi's model repo — GENGHIS fetches it if you don't have it:
+# …or just a NAME that lives in the authority's model library — GENGHIS fetches it if you don't have it:
 $env:GENGHIS_MODEL = "Llama-3.3-70B-Instruct-Q4_K_M.gguf"
 py genghis_coordinator.py decide                # SEE the plan (which nodes, why) — no inference
 py genghis_coordinator.py run                   # actually run it (self-healing)
@@ -43,7 +43,7 @@ set its `base_url` to `http://<coordinator>:8899/v1` and pick a "model" (`genghi
 docker run -d -p 3080:8080 --name open-webui --restart always \
   -e WEBUI_AUTH=False -e OPENAI_API_BASE_URL=http://host.docker.internal:8899/v1 \
   -e OPENAI_API_KEY=none -v open-webui:/app/backend/data \
-  ghcr.io/open-webui/open-webui:v0.11.3
+  ghcr.io/open-webui/open-webui:v0.11.4
 ```
 Open **http://localhost:3080** and chat (no login). Point it at your **authority** (`http://<authority-ip>:8899/v1`)
 for an always-on endpoint, or the **laptop** for the fast 5090 path. Optional web search (DuckDuckGo, no key)
@@ -102,22 +102,67 @@ cache (`-c`, every GENGHIS launcher does) keeps the weights, and the next call l
 18.2 t/s prompt · 113 s wall · laptop-5090* — and the same row lands in `runs.jsonl` (`strategy: v1_stream`). If it says
 *working (N s)* with no byte count, the authority is not Linux (no `ss`) — it is still loading, just blind.
 
-## The model library (on the Pi)
+## Say what you want done — roles (D48–D50)
+Besides the speed settings, the model list shows **roles**: `genghis-researcher`, `genghis-coder`, and any you add. Pick
+one like any model. A role is a way of working (its own instructions, the tools it may use, a folder of documents it
+reads, and a speed setting), and GENGHIS picks a model that can do it. If nothing on your fleet can, it refuses and
+says why instead of half-working.
+```powershell
+py genghis_coordinator.py roles                                  # what each role would run right now
+py genghis_coordinator.py roles researcher                       # one role in full: model, tools, knowledge folder
+py genghis_coordinator.py roles researcher "your question"       # preview the passages it would read for that question
+```
+- **Your own roles** live in your home folder (`GENGHIS_HOME`), never in the repo. The fields, and how to write one:
+  [`home.example/README.md`](home.example/README.md).
+- **Which model a role runs:** list its favourites in `"prefer"`; the first one your library holds runs, and the Thinking
+  panel says which and why. A role that drives a program (the Blender role) needs a model that makes real tool calls.
+- **Let the Researcher look things up:** switch on `adapters/web.json` in your home. It searches DuckDuckGo and reads
+  the pages it cites, public internet only. It needs a model that fits one card (tools don't run on a split).
+- **Blender on another machine:** the Blender adapter's `"node"` names the box Blender runs on, and GENGHIS relays to it,
+  so Blender's own port never opens to the network. Switch it on in that box's copy of `adapters/blender.json`.
+- **Give a role your documents:** add `"knowledge": "~/papers"` to its file. Each question is searched against that
+  folder and the best passages go to the model, tagged `[K1]`… with file and page. It's keyword search, so ask with
+  the words your documents use. PDFs need `pypdf` in the serve's Python: the installers offer it and `verify` checks it.
+  A small model may use a passage without citing it; pick a larger one for a role that must cite.
+
+## Attach a document to a chat
+- **In Open WebUI:** drop the PDF into the message box. Open WebUI reads it itself, inside its own container, and
+  sends GENGHIS the text.
+- **From any other app that attaches the file itself** (an OpenAI `file` part): GENGHIS reads it before the model sees it,
+  PDFs page by page and text files as they are, up to about 40,000 characters each. The Thinking panel says what
+  happened to each attachment. If it can't read one (no `pypdf`, a scanned page, a photo), the answer says why and how
+  to fix it. An attachment never makes the chat fail.
+
+## Is this box OK? — `verify`
+```powershell
+py genghis_coordinator.py verify                      # the box you're on   (Linux: python3 genghis_coordinator.py verify)
+py genghis_coordinator.py verify <node-id> --bench    # from the authority: every layer on that node, at what speed
+```
+Read-only, safe to run any time. It checks that the box is in the fleet and up, built from the pinned llama.cpp,
+lending its GPU for real, on a wired link, and able to read PDFs and its roles' folders. Each problem comes with its
+fix. It ends with **the addresses worth bookmarking**, checked rather than guessed, and saved to
+`~/genghis-addresses.txt`. What each check means: [`docs/agents/when-verify-fails.md`](docs/agents/when-verify-fails.md).
+
+## The model library (on the authority)
 The coordinator **is** the model repository — stage GGUFs once, run them from anywhere by name.
 ```bash
 py genghis_coordinator.py models                       # list the repo + your local cache
 py genghis_coordinator.py models pull <name.gguf>      # download one into your local cache (resumable)
 ```
-Stage a new model: `scp your-model.gguf <you>@<PI>:~/genghis/models/`. Any client can then `run` it by
+Stage a new model: `scp your-model.gguf <you>@<AUTHORITY>:~/genghis-src/poc/models/`. Any client can then `run` it by
 bare name (fetch-if-missing, resumes if the transfer drops). *(Reference repo: the 1.5B, 32B, and 70B.)*
 
-## What the four goals mean now (reference fleet, 2026-09-14)
+## What the four goals mean now (reference fleet, 2026-09-23)
 | you pick | model | where it runs | feel |
 |---|---|---|---|
-| `genghis-fastest` | 1.5B | resident on whichever host you hit | sub-second |
-| `genghis-fit` | 14B | the home base's own GPU (the NUC's Arc), resident | first token ~1 s, ~6 t/s, works with the laptop off |
-| `genghis-balanced` | 32B | **handed to the host that holds it** — the laptop's 5090 when it is on (D34); pooled over RPC otherwise | 0.3 s first token when the laptop is home |
-| `genghis-biggest` | 70B | pooled across the fleet — no single box could hold it | minutes; capacity, not speed |
+| `genghis-balanced` | Qwen3.5 9B, thinking off | the NUC's 5060 Ti, resident | a full answer in 3-5 s (~61 t/s); reads pictures |
+| `genghis-fastest` | Qwen2.5 1.5B | resident on whichever host you hit | sub-second; Open WebUI's titles and tags use it |
+| `genghis-fit` | Qwen2.5 14B | the NUC's 5060 Ti, resident | ~41 t/s once loaded; no pictures |
+| `genghis-biggest` | Llama 3.3 70B | pooled across the fleet: no single box could hold it | minutes to load, ~2 t/s; capacity, not speed |
+
+And the roles: `genghis-researcher` (Qwen3.5 9B, thinking on, searches and reads the web itself: 20-45 s), `genghis-coder`
+(Qwen2.5-Coder 32B, split across the 5060 Ti and the Arc: ~4 t/s), `genghis-blender` (Qwen3.5 9B, drives Blender on the
+laptop). Each goal's model is a choice in config (`goal_models`), set in the Control Room.
 The *Thinking…* panel always tells you which of these happened ("handing this to laptop-5090 …", "solo on nuc-155h", "pooled across …").
 
 ## Themes for the chat window
@@ -177,7 +222,7 @@ change you make in its Control Room back to the authority. So the Control Room o
 the same fleet, and a node registers once. A host is any box with `GENGHIS_COORD=<authority>` set (the installers set it).
 
 ## The Control Room — the main dashboard
-Open **`http://<PI>:8899/`** in a browser (D24). It is the live face of the fabric: pool summary, per-node
+Open **`http://<AUTHORITY>:8899/`** in a browser (D24). It is the live face of the fabric: pool summary, per-node
 badges, the **goal → model** dropdowns, the **Models grid — one column per host** (each cell **● WARM + Unload**
 or **Warm now**; the header line says who holds what), and a **Local Resources** hub (Open WebUI · Grafana · Prometheus · fleet admin · API reference) with
 live up/down dots. Each node card has a **Retire** button (see *Nodes come and go*, below).
@@ -266,7 +311,7 @@ Requires the coordinator's `serve` running (it is, if the Pi is on). The TV app 
 
 - **Leave a message on the TV** — edit the presence message on the coordinator:
   ```bash
-  ssh <you>@<PI> "cat > ~/genghis/hearth_message.txt" <<'MSG'
+  ssh <you>@<AUTHORITY> "cat > ~/genghis/hearth_message.txt" <<'MSG'
   # a headline
   the body of the message the TV will show, in firelight.
   MSG
@@ -316,12 +361,13 @@ tail -20 ~/genghis/watchdog.log        # on the authority
 
 ## Keep it healthy
 - **Everything auto-starts at boot** (coordinator `serve` + each donor's `donor-serve.sh`/`donor-report.sh`
-  via `@reboot` cron). After a power-cut, just wait ~a minute and `curl http://<PI>:8899/fabric`.
+  via `@reboot` cron). After a power-cut, just wait ~a minute and `curl http://<AUTHORITY>:8899/fabric`.
   On a **Windows** `serve` node (the fast 5090 path), [`poc/serve-laptop.ps1`](poc/serve-laptop.ps1) + a
   per-user **Startup** launcher does the same — crash-restart loop + auto-start at logon, no admin needed.
-- **Restart the coordinator** (rarely needed): `ssh <PI> "pkill -f 'genghis_coordinator.py serve'"` — the
-  loop respawns it.
-- **Restart a donor**: `ssh <donor> "pkill -f ggml-rpc-server"` — its `donor-serve.sh` loop respawns it.
+- **Restart the coordinator** (rarely needed): `ssh <AUTHORITY> "pkill -f 'genghis_coordinator[.]py serve'"` — the
+  loop respawns it. The `[.]` matters: a plain `genghis_coordinator.py serve` pattern also matches the SSH shell running
+  the command and kills your own session; `[.]` still matches the serve but can never match its own command line.
+- **Restart a donor**: `ssh <donor> "pkill -f 'ggml-rpc-serve[r]'"` — its `donor-serve.sh` loop respawns it.
   (If nothing respawns, the service loop isn't running — start `donor-serve.sh` per [INSTALL.md](INSTALL.md) §2.)
 - **A node shows DOWN?** Its donor service isn't running, or port `50052` is blocked, or it built a
   different llama.cpp commit — see [INSTALL.md](INSTALL.md) → Troubleshooting.

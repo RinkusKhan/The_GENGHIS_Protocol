@@ -6,7 +6,7 @@
 
 **Turn the idle devices you already own into one AI compute-and-memory pool.**
 
-GENGHIS lets a modest client device (a laptop) borrow CPU/GPU and RAM from other devices on the local network — phones, tablets, Raspberry Pis, an old GPU box — and run AI models it could never hold alone. A dedicated **coordinator** plans *where each slice of a model runs* from each device's real capability and network latency, and heals that plan as devices come and go.
+GENGHIS lets the devices on your local network lend each other memory and compute — a GPU laptop, a desktop or an eGPU, a mini-PC, Raspberry Pis — so that together they run AI models none of them could hold alone. A dedicated **coordinator** plans *where each slice of a model runs* from each device's measured capability and network latency, and heals that plan as devices come and go.
 
 > Named for Genghis Khan: conquered peoples kept their own cultures, languages, and religions. GENGHIS lets each donor keep its own OS, architecture, and accelerator — ARM, x86, CUDA, whatever — unified under one coordinator without being forced to become the same.
 >
@@ -27,8 +27,8 @@ AI demand is pulling DRAM, HBM, and VRAM into datacenters; memory is scarce and 
 The winning idea isn't pooling a fungible quantity of "processing." It's pooling **memory** via **layer sharding**:
 
 - A large model's layers are split across donors — each holds only its slice of the weights.
-- During inference, small **activation vectors** (a few KB) stream device→device down a pipeline. This is latency-bound, not bandwidth-bound, so a good LAN (even WiFi 5) handles it well.
-- The client only holds the tokenizer and sampling; the donors do the heavy compute.
+- During inference, small **activation vectors** (a few KB) stream device→device down a pipeline. Every token pays a round-trip to every device in the plan, so it is **latency-bound, not bandwidth-bound — and the link sets the pace.** Measured: the same RTX 5060 Ti served the fleet at **38 t/s over 1 GbE and 228 t/s** attached to its host over Thunderbolt. Even a lone Pi 5 generated **29 % faster on a cable than on Wi-Fi** (7.6 → 9.7 t/s, same Pi, same model), because every token is several round-trips. Wi-Fi donors (which have measured anywhere from 6 to 300 ms here) are capacity of last resort. **For speed, wire your donors, and go faster than gigabit where you can.**
+- The host's own GPU (the **anchor**) runs every layer it can hold; only the overflow goes to donors, and the planner picks the fewest, fastest ones that cover it.
 
 ```mermaid
 flowchart LR
@@ -40,9 +40,9 @@ flowchart LR
     end
     subgraph PIPE["🔗 Donor pipeline — model split into layer shards"]
         direction LR
-        D0["Donor A · CPU<br/>layers 0–9"]
-        D1["Donor B · CPU<br/>layers 10–19"]
-        D2["Donor C · GPU<br/>layers 20–27"]
+        D0["Anchor · the host's own GPU<br/>every layer it can hold"]
+        D1["GPU donor · wired<br/>the overflow"]
+        D2["CPU donor · e.g. a Pi<br/>only if the GPUs can't hold it"]
     end
     K["🧠 Coordinator — NUC (Ubuntu)<br/>plan • model repo • telemetry"]
 
@@ -92,7 +92,7 @@ sequenceDiagram
 
 ## Status
 
-**Well past POC — a self-aware, self-healing cluster runs today.** From a modest laptop client, GENGHIS pools a heterogeneous fleet and runs models no single node could hold.
+**Well past POC — a self-aware, self-healing cluster runs today.** GENGHIS pools a heterogeneous fleet and runs models no single node could hold.
 
 | Milestone | State |
 |---|---|
@@ -108,8 +108,9 @@ sequenceDiagram
 | **Web admin + config** — name/manage nodes, default goal, PIN; featherweight (stdlib, no framework) | ✅ |
 | **Zero-config mDNS discovery** — clients + the TV auto-find the coordinator (no hardcoded IP) | ✅ |
 | **Auth (shared PIN) + Prometheus `/metrics`** — lockable coordinator; Grafana dashboard + "donor down" alert | ✅ |
-| **OpenAI-compatible `/v1` API + [Open WebUI](https://github.com/open-webui/open-webui)** — chat the pool from any OpenAI client; **the always-on Pi can host inference itself** (laptop off) via a self-vantage fix (D17–D19) | ✅ |
-| **Intel NUC 14 Pro** integrated — Arc iGPU via **llama.cpp Vulkan** RPC donor (~17.6 t/s) | ✅ |
+| **OpenAI-compatible `/v1` API + [Open WebUI](https://github.com/open-webui/open-webui)** — chat the pool from any OpenAI client; **an always-on box can host inference itself** (laptop off) via a self-vantage fix (D17–D19) | ✅ |
+| **Intel NUC 14 Pro** integrated — Arc iGPU via **llama.cpp Vulkan** RPC donor | ✅ |
+| **eGPU on the authority (D46)** — the RTX 5060 Ti moved from a 1 GbE box into a Thunderbolt enclosure on the NUC: **38 → 228 t/s**, same card | ✅ |
 | **Model registry + residency (D23)** — every local GGUF selectable in `/v1`, a user-set goal→model map, and a **warm `llama-server`** (switch models without re-loading GB — 32B ~15 s cold → ~2.8 s warm) | ✅ |
 | **Control Room dashboard (D24)** — the live main page at `:8899/` (fleet · models · load/unload · a Local-Resources front-door hub with live status), Docker-free; **Open WebUI branded GENGHIS** | ✅ |
 | **Docker = one optional labelled `genghis` project (D21)** + **first-run `genghis init`/scrub so the release ships none of our own data (D22)** | ✅ |
@@ -120,8 +121,14 @@ sequenceDiagram
 | **Watchdog** — an independent 15-min liveness pass; every Control Room shows *verified HH:MM · N/N nodes* | ✅ |
 | **Dual-role nodes + Vulkan clients (D27)** — a box can be its own local anchor *and* an RPC donor for everyone else; Intel Arc / AMD boxes are first-class clients (`build-vulkan`, installer auto-detect, `-Donor`) | ✅ |
 | **HEARTH** — the fabric's *face* / the Fold's surface, live on a real Samsung TV (sibling project) | ✅ |
+| **Roles (D48–D54)** — say what you want done (`genghis-researcher`, `genghis-coder`, or your own): instructions + tools + a knowledge folder + a speed setting, with the model chosen by what it can actually do; **adapters** let a role act (Blender first, off until armed); a role **reads its knowledge folder** (keyword retrieval, cited passages, PDFs via `pypdf`); a role names the models it is **best at** and the reply says which ran (D53); a **web adapter** lets the Researcher search and read pages itself, public internet only (D54); an adapter can drive a program **on another box** (Blender on a laptop, run from the home base) without opening that program's port; vision models **see attached pictures** | ✅ |
+| **`verify` + [`AGENTS.md`](AGENTS.md)** — every install ends with a read-only check (registered, pinned build, GPU really lent, wired link, PDFs readable) and the addresses to bookmark; an AI agent can install by the rules and prove it's done | ✅ |
+| **A measured record (D51)** — the authority re-measures every node every minute, and a donor's memory comes from its own device (Vulkan GPUs no longer start at zero capacity) | ✅ |
+| **Attached documents** — a PDF or text file attached to a chat is read by GENGHIS; an attachment never fails the request | ✅ |
 
-**The keystone finding:** adding a weak donor via naive memory-split made generation *slower* (7.8 → 3.3 tok/s) — exactly the problem a capability-aware coordinator exists to solve. Confirmed again at scale (Run #10: benching the weak Tegra made a 70B run **3.25× faster**). See `poc/RESULTS.md`.
+**The keystone finding:** adding a weak donor via naive memory-split made generation *slower* (7.8 → 3.3 tok/s) — exactly the problem a capability-aware coordinator exists to solve. Confirmed again at scale (Run #10: benching the weak Tegra made a 70B run **3.25× faster**). See [`poc/RESULTS.md`](poc/RESULTS.md).
+
+**What that means for the Pis:** a Pi runs 3B-and-up models the same way an x86 box does; the only limit is its memory. Pis have held shards of the 32B and the 70B in logged runs. What a Pi can't do is compute them fast: the Pi 5 measures 9.7 t/s alone on a wire (7.6 on Wi-Fi), where a wired GPU is in the tens to hundreds. So a Pi is **capacity**, and the planner reaches for one only when the GPUs can't hold the model (D41).
 
 ---
 
@@ -130,10 +137,11 @@ sequenceDiagram
 | Device | Role |
 |---|---|
 | Windows 11 laptop — **RTX 5090 (24 GB, Blackwell)** | Client / orchestrator **+ the anchor compute node** (local `CUDA0`) |
-| Raspberry Pi 5 (8GB, ~1TB) | Was the coordinator (2026-09-06→14); now a **CPU donor + the nightly cold spare** of the authority (full model library kept) |
+| Raspberry Pi 5 (8GB, ~1TB) | Was the coordinator (2026-09-06→14); now a **CPU donor** (solo on a 1.5B: 7.6 t/s on Wi-Fi, **9.7 wired**; held shards of the 32B and 70B) **+ the nightly cold spare** of the authority (full model library kept) |
+| Raspberry Pi 4 (4 GB) | Donor (CPU, 3.4 t/s solo on a 1.5B, **wired**: 0.4 ms to the authority) |
 | **RTX 5060 Ti (16 GB, Blackwell) in a Thunderbolt 4 eGPU enclosure, on the NUC** | Donor (CUDA) — served by the NUC's own `ggml-rpc-server` on a second port; **local-class** to that box (D46). Was a separate Ubuntu Server box until 2026-09-22; moving it onto the NUC took it from 38 t/s over 1 GbE to 228 t/s over Thunderbolt |
-| Nvidia Tegra X1 (Jetson) | Donor (CPU) |
-| Samsung UN50CU7000 smart TV | **SURFACE — the HEARTH face of the Fold** *(HEARTH coming soon)* (was a STORE node; the Pi is the repo now) |
+| Nvidia Tegra X1 (Jetson) | Donor (CPU, 1.8 t/s solo) — the weak node the planner learned to bench |
+| Samsung UN50CU7000 smart TV | **SURFACE — the HEARTH face of the Fold** *(HEARTH coming soon)* — not a donor (was a STORE node; the model library lives on the authority now) |
 | **Intel NUC 14 Pro** (Core Ultra 7 155H · Arc iGPU · 32 GB) — **Ubuntu 26.04 LTS** | **The authority + always-on home base:** fleet + config + **model repository** + web admin + HEARTH backend + mDNS + `/metrics` + watchdog; `/v1` host with residency; Arc/Vulkan donor — took over from the Pi ✅ |
 | Raspberry Pi 4 (camera node) | **D20 task-fabric "eye" node** (camera pending) — not a compute donor |
 | Linux x86 server · Pi 5 (4/2GB) · Pi 3 B | Donors — pending / deliberate "starve-me" test nodes |
@@ -154,24 +162,33 @@ Nobody is "the client". Work goes where the model lives; the authority is in cha
 
 ## What can be a donor?
 
-The only real requirement: **run a Linux-style userland + the `ggml-rpc-server` binary for the device's CPU, and reach the LAN.** GPU acceleration is a bonus wherever a backend exists (CUDA/Nvidia, Metal/Apple, Vulkan/many). That gate opens a large share of the modern home — and the *always-on* devices (NAS, TV boxes, mini-PCs) are the most valuable, since they don't roam or sleep like phones do.
+The only real requirement: **run a Linux-style userland + the `ggml-rpc-server` binary for the device's CPU, and reach the LAN.** GPU acceleration is a bonus wherever a backend exists (CUDA/Nvidia, Metal/Apple, Vulkan/many).
 
-![The GENGHIS ecosystem — device diversity across three feasibility tiers: laptops, desktops, servers, and Macs (native); phones, tablets, Android/Fire TVs, streaming sticks, Raspberry Pis, Jetson/Shield, NAS boxes, Steam Decks, VR headsets, and home hubs (feasible via a Linux layer); game handhelds, iPhones/iPads, and locked smart TVs (aspirational) — all feeding one coordinator](docs/ecosystem.svg)
+Two separate questions decide what a donor is worth:
+- **Can it hold a slice?** That's memory. Any box that runs the binary can, a Pi as well as an x86 server. This is what lets a model too big for any one device run at all.
+- **How fast is that slice?** That's the accelerator and the link. A GPU on a fast wired link is worth many CPUs. A CPU donor on Wi-Fi mostly adds capacity, not speed.
+
+Always-on boxes matter most for capacity, since they don't roam or sleep like phones do. Speed comes from GPUs.
+
+![The GENGHIS ecosystem in three tiers. Proven in real pooled runs: GPU laptop (CUDA), desktop / eGPU (CUDA), mini-PC (Vulkan iGPU), Raspberry Pi 4 and 5, Jetson Tegra X1; a Samsung Tizen TV is proven as a display surface, not a donor. Untested (native or via a Linux layer): x86 server, Mac, NAS, phone, tablet, Nvidia Shield, Android TV, Fire stick, Steam Deck, VR headset, home hub. Locked: Switch / Vita, iPhone / iPad, webOS TV.](docs/ecosystem.svg)
 
 > ### 💡 The best donor is the one already gathering dust
 > GENGHIS is really about **reclaiming under-utilized hardware** — devices you already own that sit idle almost all the time:
 > - the **gaming PC** idle 16 hours a day, the **Mac mini** that only runs backups, the **NAS** ticking along at 5% CPU;
 > - the **three old phones** in a drawer, the **retired laptop**, the **tablet** used twice a month;
-> - the **smart TV** that's off 20 hours a day, the **VR headset** used for an hour on weekends, the **Steam Deck** between trips.
+> - the **VR headset** used for an hour on weekends, the **Steam Deck** between trips.
 >
-> None of this is a purchase. It's spare capacity you've *already* paid for — and the self-healing coordinator is built precisely so devices can come, go, and sleep without breaking the pool. That's the whole thesis: **not buy more memory — use the memory you're already wasting.**
+> Some of these are proven donors and most are not yet measured; the graphic above says which. None of this is a purchase. It's spare capacity you've *already* paid for — and the self-healing coordinator is built precisely so devices can come, go, and sleep without breaking the pool. That's the whole thesis: **not buy more memory — use the memory you're already wasting.**
 
-**Works today — native:**
-- **Linux** — desktops, servers, SBCs (Raspberry Pi, Orange Pi, Odroid, Jetson…)
-- **Windows** — also the client
-- **macOS** — Macs get the **Metal** GPU backend; first-class and fast (Mac Mini/Studio, MacBook, iMac)
+**Proven — measured in real runs:**
+- **Linux** — GPU desktops (CUDA, including an eGPU over Thunderbolt), mini-PCs (Intel Arc iGPU over Vulkan), **Raspberry Pi 4 and 5**, **Nvidia Jetson (Tegra X1)**
+- **Windows** — a CUDA laptop as the anchor and a host
 
-**Feasible with a Linux layer:**
+**Native, not yet measured:**
+- **macOS** — llama.cpp's **Metal** backend should make Macs strong donors (Mac Mini/Studio, MacBook, iMac), but no Mac has joined a GENGHIS run yet
+- **x86 servers** and other SBCs (Orange Pi, Odroid…)
+
+**Feasible with a Linux layer — not yet measured:**
 - **Android** phones & tablets — via Termux
 - **Android TV / Google TV & Fire TV** — smart TVs, streaming boxes, **Nvidia Shield** (Tegra); Termux-sideloadable
 - **VR headsets (Meta Quest)** — Snapdragon XR2, **6–12 GB RAM**, sideload-friendly Android; more capable than most phones
@@ -182,7 +199,7 @@ The only real requirement: **run a Linux-style userland + the `ggml-rpc-server` 
 - **…and the long tail** — rooted robot vacuums (Valetudo), smart speakers/displays, set-top boxes/DVRs, even a jailbroken Kindle: technically donors, but weak and often intermittent — novelties for the story, not workhorses.
 
 **Proven at the edge:**
-- **Tizen (Samsung) smart TVs** — ✅ **DONE (D8), graduated from "aspirational."** A signed Tizen **.NET** app was sideloaded and runs on a **retail Samsung UN50CU7000** (Developer Mode + a DUID-bound Samsung cert + `sdb` over the LAN). Its role is the live **HEARTH** *(coming soon)* display **surface** — the face of the Fold — which now **auto-discovers** the coordinator (Tizen NSD) and **pulls its config**. Weak `armv7`/32-bit CPU + no usable GPU ⇒ *not* a compute donor; the model repository moved to the Pi, so the TV is no longer a STORE node (see [`DECISIONS.md`](DECISIONS.md) D8 → **D11**).
+- **Tizen (Samsung) smart TVs** — ✅ **DONE (D8), graduated from "aspirational."** A signed Tizen **.NET** app was sideloaded and runs on a **retail Samsung UN50CU7000** (Developer Mode + a DUID-bound Samsung cert + `sdb` over the LAN). Its role is the live **HEARTH** *(coming soon)* display **surface** — the face of the Fold — which now **auto-discovers** the coordinator (Tizen NSD) and **pulls its config**. Weak `armv7`/32-bit CPU + no usable GPU ⇒ *not* a compute donor; the model library lives on the authority, so the TV is no longer a STORE node (see [`DECISIONS.md`](DECISIONS.md) D8 → **D11**).
 
 **Aspirational — locked platforms (would need a custom app or homebrew):**
 - **iOS / iPadOS, tvOS** — no arbitrary binaries; only via a bespoke Metal app
@@ -202,10 +219,12 @@ questions of each machine — *is it always on? does it have a GPU?* — and the
 
 **1 · The authority (your always-on box — a Pi, a NUC, a server):**
 ```bash
-git clone <this repo> ~/genghis-src && cd ~/genghis-src
-bash install/install-linux.sh --role coordinator            # + --accel cuda|vulkan if it has a GPU
+git clone https://github.com/RinkusKhan/The_GENGHIS_Protocol ~/genghis-src && cd ~/genghis-src
+bash install/install-linux.sh --role coordinator
+# has a GPU? also lend it -- a second run, as a donor of itself:
+bash install/install-linux.sh --role donor --accel cuda|vulkan --coord <this-box-lan-ip>
 ```
-Control Room at `http://<authority-ip>:8899/`. Put your `.gguf` files in `poc/models/` — that is the fleet's library.
+Put your `.gguf` files in `poc/models/` — that is the fleet's library.
 
 **2 · Every other box:**
 ```bash
@@ -215,8 +234,14 @@ bash install/install-linux.sh --role donor --accel cpu|cuda|vulkan --coord <auth
 powershell -ExecutionPolicy Bypass -File install\install-windows.ps1 -Serve -Donor -Coord <authority-ip>   # Windows (CUDA or Vulkan auto-detected)
 ```
 Each installer **preflights, guides what it can't automate, builds llama.cpp at the pinned commit, registers the
-box with the authority, and makes it reboot-proof** — the node appears in every Control Room on the next heartbeat.
+box with the authority, and makes it reboot-proof**. Then it **runs `verify`**: a read-only check that the box is
+really in the fleet doing what its class should (registered and up, the pinned build, the GPU really lent, a wired
+link), with the fix for anything that isn't. It ends with **the addresses to bookmark**: the real LAN and Tailscale
+addresses that answered, saved to `~/genghis-addresses.txt`. An install is finished when `verify` passes.
 Windows boxes that run `-Serve` become inference hosts: their own chat + Control Room, one shared fleet.
+
+> **Installing with an AI agent?** Point it at [`AGENTS.md`](AGENTS.md): the rules it must not break, task guides for
+> each kind of box, and `verify` as the finish line it can check for itself.
 
 **3 · Use it:** open the Control Room, pick which model each speed setting runs, then chat from any OpenAI
 client at `http://<host>:8899/v1` — or run the optional Docker tier on the host box:
@@ -237,7 +262,8 @@ self-healing. Full guides: [`INSTALL.md`](INSTALL.md) · [`USAGE.md`](USAGE.md) 
 
 | Doc | What it covers |
 |---|---|
-| **[`install/`](install/)** | **Per-role preflight installers (D18)** — `install-windows.ps1` / `install-linux.sh`: detect → guide → build → register, idempotent, with a safe preflight/doctor mode |
+| **[`install/`](install/)** | **Per-role preflight installers (D18)** — `install-windows.ps1` / `install-linux.sh`: detect → guide → build → register → **`verify`**, idempotent, with a safe preflight/doctor mode |
+| **[`AGENTS.md`](AGENTS.md)** | **For an AI agent installing or extending GENGHIS** — the rules it must not break, and task guides in [`docs/agents/`](docs/agents/) (the authority · adding a box · GPUs · when `verify` fails) |
 | **[`INSTALL.md`](INSTALL.md)** | **The manual walkthrough** — per-platform steps (coordinator, donors, client, TV) + golden rules + troubleshooting (what the installers automate) |
 | **[`USAGE.md`](USAGE.md)** | **Day-to-day** — run a model, the goal knob, view the fleet, HEARTH + check-ins, keep it healthy |
 | [`docs/COMMANDS.md`](docs/COMMANDS.md) | Full command reference (every command, endpoint, env var) |
@@ -252,6 +278,7 @@ self-healing. Full guides: [`INSTALL.md`](INSTALL.md) · [`USAGE.md`](USAGE.md) 
 | [`DECISIONS.md`](DECISIONS.md) | Decision log with rationale (coordinator, licensing, min-WiFi, …) |
 | [`poc/README.md`](poc/README.md) | POC runbook — donor setup, running splits, troubleshooting |
 | [`monitoring/README.md`](monitoring/README.md) | Prometheus + Grafana — one-command dashboard & the "donor down" alert |
+| [`poc/RESULTS.md`](poc/RESULTS.md) | Run ledger — every experiment and its numbers |
 
 ---
 

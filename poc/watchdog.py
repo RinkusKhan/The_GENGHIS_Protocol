@@ -122,11 +122,10 @@ def main():
             + "".join(f" | NO-GPU {g['id']}: {g['problem']}" for g in gpu_problems))
     with open(LOG, "a", encoding="utf-8") as f:
         f.write(line + "\n")
-    # The authority's fleet.json carries each node's status/last_seen, but the serve only writes them when it PLANS
-    # (a browser poll heartbeats without persisting, by design -- a read must not rewrite the source of truth on every
-    # refresh). So a quiet fleet leaves that file days stale: the Tegra came back and fleet.json still said
-    # "down, last_seen 2026-09-20" (2026-09-22). This pass already probed every node -- write what it saw, so the
-    # persisted record (and the Pi's nightly cold-spare copy of it) is never more than 15 minutes old.
+    # The authority's serve keeps fleet.json's liveness current itself, every minute (its liveness beat). This pass
+    # writes the file ONLY when that serve is down: rewriting the whole file from a copy loaded seconds earlier raced
+    # the serve's own writes (a report or a registration landing mid-pass was silently undone). With the serve down,
+    # nothing else is writing, and the record -- and the Pi's nightly cold-spare copy -- still stays within 15 minutes.
     try:
         changed = False
         for n in nodes:
@@ -138,7 +137,12 @@ def main():
                 d["status"] = new; changed = True
             if n["up"] and d.get("last_seen") != now.isoformat(timespec="seconds"):
                 d["last_seen"] = now.isoformat(timespec="seconds"); changed = True
-        if changed:
+            # ...and the round-trip it just measured. Writing liveness WITHOUT latency froze every latency at its last
+            # planned value: a Pi moved to a cable still read its 264 ms Wi-Fi figure hours later, and `verify`
+            # told it to "put it on a cable" (2026-09-22). A pinned donor was not dialled (rpc_ms None): keep its value.
+            if n["up"] and n.get("rpc_ms") is not None and d.get("latency_ms_to_orchestrator") != n["rpc_ms"]:
+                d["latency_ms_to_orchestrator"] = n["rpc_ms"]; changed = True
+        if changed and not authority["serve"]:              # the serve is down: nothing else is writing the file
             ftmp = FLEET + ".tmp"
             with open(ftmp, "w", encoding="utf-8") as f:
                 json.dump(fleet, f, indent=1)

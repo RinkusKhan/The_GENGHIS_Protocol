@@ -17,6 +17,179 @@ Newest at top. See also [PROJECT_CHARTER.md](PROJECT_CHARTER.md), [README.md](RE
 
 ---
 
+## D54 — The Researcher looks things up itself: a built-in web adapter that reads only the public internet (2026-09-23)
+**Context:** the Researcher could only work from what it was given. Open WebUI's own web search (DuckDuckGo, now 5
+results) runs *before* the question and pastes results in; useful, but the model cannot choose what to search, follow
+a lead, or read the page behind a snippet. The maintainer: "take the next step".
+
+**Decision:** a `web` adapter, built into GENGHIS (`"transport": "web"`, stdlib only): two named operations, `search`
+(DuckDuckGo's no-script results page; Wikipedia's search API when DuckDuckGo gives nothing or refuses) and `read_page`
+(one http(s) page to plain text, the page's `<main>`/`<article>` when it marks one, a PDF through pypdf when present,
+about 9,000 characters). It rides D49's machinery: switched off in the shipped file, on in the person's home, offered to
+any role whose belt names it, at most `ADAPTER_MAX_ROUNDS` (6) rounds per answer.
+
+**The one safety rule it cannot break: public internet only.** Every address the host resolves to must be global; a
+private, loopback, link-local or reserved address is refused before the request and again at every redirect (tested:
+The NUC's own `/fleet.json`, `localhost`, `169.254.x.x`, `<node-ip>`, `file://`). A page, or a model a page misled,
+cannot reach the router, the NUC's admin, or anything else on the LAN. Page text reaches the model marked as material to
+weigh and cite, not instructions.
+
+**Measured, first live run:** the Researcher on Qwen3.5-9B (NUC 5060 Ti, thinking on) searched once, read two pages,
+and answered with a comparison table, both sources named and dated, and caveats, in **20 s**. It needs a model that
+sits whole on one card: split runs have no tool path (D53), which is why Qwen3.5-9B leads the Researcher's list.
+
+— A role names the models it is best at, and reaches a program on another box through that box's serve (2026-09-23)
+**Context:** the maintainer: roles "load wrong models and don't work". All true, for several reasons at once. Every role ran
+whatever its goal mapped to (Qwen 32B for all three), so the Blender role never used a Blender model. The Blender
+adapter looked for Blender on the machine running the chat (the NUC), while Blender runs on the laptop and its add-on
+listens on 127.0.0.1 only. A role with no tools told the user it had "web search engines". And underneath, three
+engine bugs made role chats come back blank or refused (below).
+
+**Decision 1: `prefer`, softer than a pin.** A role lists the model files it is best at, in order; the first one this
+library holds that meets `requires` runs, and otherwise the goal picks as before. The reply's status line says which
+happened and why ("its preferred model", or "none of its preferred models can run here: X is not in this library").
+A pin (`model`) still means "this or refuse". Handing a chat to another host (D34) now carries the chosen model file
+(`X-Genghis-Model`), so the other host runs that model instead of re-resolving the role against its own library, and
+a host qualifies for a hand-over only if the file is actually on its disk. (The NUC had handed a Researcher chat to
+The laptop "to load Qwen3.8-27B from its local disk"; the laptop does not have that file and ran its own pick.)
+
+**Decision 2: the model is told which tools exist this turn.** A role's system prompt ends with the list of callable
+tools, or with "you have no tools in this conversation", so the model cannot fill the gap with invented ones.
+
+**Decision 3: an adapter can run on another fleet host (`"node"`), and GENGHIS relays to it.** Blender's add-on has one
+operation, "run this Python", so its port must never be opened to the network. Instead, an adapter file names the node
+where the program runs; a role on any host sends each **named operation** (arguments bound as JSON literals, as
+before) to that node's serve (`POST /adapter`), which runs it against its own localhost. That node's **own copy** of
+the adapter file decides whether it is switched on, and the door accepts only another GENGHIS host in the fleet (a
+home LAN runs in local mode, where every visitor is admin). `GET /adapter.json?id=` answers "on, and answering?".
+Measured 2026-09-23: the Blender role on the NUC (Qwen3.5-9B on the 5060 Ti) listed the laptop's scene, added a named
+cube, and deleted exactly that cube, 7 to 20 s per turn.
+
+**Decision 4: tool-driving roles need models that make real tool calls.** BlenderLLM passes the template check (its
+template has a tool branch) but writes its calls as plain text (`<tools>{…}</tools>`), which llama.cpp cannot parse,
+so the scene never changes. The stock Blender role prefers Qwen3.5-9B, then Qwen2.5-14B and 32B. A behavioural tool
+check in the registry is the follow-up; the template check alone is not enough.
+
+**The engine bugs found on the way (each made a role chat blank or refused):**
+- **llama-cli echoes only the first 500 bytes of a prompt**, then `... (truncated)`. The stream reader waited for the
+  closing assistant tag that never came and discarded the whole answer, for every prompt over 500 bytes on the
+  per-request engine: every role, every multi-turn chat on a split run. It now starts after the truncation marker.
+- **Two llama.cpp builds on one box:** binaries were found CUDA-first, so once the NUC gained a CUDA build for its
+  eGPU (D46), every plan using its own Arc died with "invalid device: Vulkan0". The binary now follows the box's own
+  card (`llama_bin`); the engine's errors go to `poc/engine.log` and reach the chat instead of `/dev/null`.
+- **A chat's placement on the box's own eGPU was treated as a chosen fabric placement (D39) and pinned**, so the next
+  role's model was refused until someone unloaded it by hand: the "green NVIDIA model that wouldn't move". Only a
+  placement made on purpose (Control Room, a formation) or one spanning other boxes pins now; the chosen flag and the
+  escalation flag survive a restart.
+- **A reply with no answer was a blank bubble.** A stream that ends without content now says why (the model only
+  thought; it ran out of tokens; the model is still being fetched). llama-cli's inline `[Start thinking]` block goes to
+  the Thinking panel, not the answer.
+- **An unknown model name ran the default model under the asked-for label.** It is now a 404 naming the problem.
+
+**Thinking is a setting, not a surprise.** A reasoning model thinks before it answers; for everyday chat that can eat the whole
+budget (Qwen3.5-9B: 2,048 tokens of thinking about a heat pump, no answer; with thinking off, 5 s at 61 t/s on the
+5060 Ti). Config `thinking` `{model file: bool}` sets the default, a role's `think` overrides it, and a client's own
+`chat_template_kwargs.enable_thinking` wins over both. The reference fleet's `balanced` became Qwen3.5-9B, thinking
+off: measured against Qwen2.5-14B (41 t/s, no vision) and Qwen2.5-32B (split across the Arc, ~4 t/s).
+
+**Where a person's roles live:** `GENGHIS_HOME` (D36). The NUC's `serve.sh` now reads `export GENGHIS_HOME=` from
+`~/.profile`, the way it already read `GENGHIS_COORD`.
+
+## D52 — NVIDIA support: RTX 20 / GTX 16-series (Turing) and newer on one toolkit; GTX 10-series experimental (2026-09-23)
+**Context:** the CUDA setup script defaulted to the retired GTX 1080 Ti's architecture, installed Ubuntu's own
+`nvidia-cuda-toolkit` whenever `nvcc` was missing (too old for an RTX 50-series card, which AGENTS.md rule 2 forbids),
+and INSTALL claimed it applied a GCC-14 host compiler and a glibc patch that it never did. Meanwhile the reference
+RTX 5060 Ti proved the simple path: **CUDA 13.2 from NVIDIA's repository builds cleanly on Ubuntu 26.04** with the stock
+compiler and no patch (D46).
+**Decision (the maintainer's):** support NVIDIA cards from **RTX 20 / GTX 16-series (Turing, compute 7.5)** up: 20, 30, 40 and
+50-series and the datacenter cards of those generations. He first set the floor at the 30-series. Adding Turing
+costs nothing, because CUDA 13 still builds for it and current drivers support it, so every supported card follows
+**one rule: CUDA 13.2 or newer, from NVIDIA's repository**. **GTX 10-series (Pascal) is experimental:** CUDA 13 dropped
+it, it needs CUDA 12 and a driver of 570 or older (D4), and that path has never run here. The maintainer still owns the GTX
+1080 Ti, so it will be proven or dropped by a test, not a guess. Running it through Vulkan instead of CUDA is the
+other path to try. **Maxwell and older: not supported** (CUDA support is ending; most have 4 GB or less).
+**What enforces it:** `donor-setup-cuda.sh` reads the card's architecture from the driver, refuses a card older than
+Turing with the reason (`GENGHIS_ALLOW_OLD_GPU=1` builds anyway, untested), finds NVIDIA's `nvcc` under
+`/usr/local/cuda/bin`, and if CUDA 13.2+ is missing it **stops and prints NVIDIA's exact commands**. It never installs
+Ubuntu's toolkit. Adding NVIDIA's repository is the person's to run, just as the driver already was. `verify` WARNs on
+a card older than Turing and on a toolkit older than 13.2. **Why the thesis cares:** GENGHIS exists to put hardware
+people already own to work, and 8–11 GB cards from a few generations back are exactly what sits in drawers. The
+floor is set by what can be supported honestly, not by what is newest. Ties to [D4], [D46].
+
+---
+
+## D51 — The authority keeps its own record current, and a donor's memory is what its device says (2026-09-22)
+**Two decisions, found together.**
+
+**1 · The serve owns liveness, and nothing saves a stale copy.** The saved fleet record went stale in three ways, all
+found on one evening. Browser polls heartbeat without saving, by design: a read must not rewrite the source of truth.
+The watchdog was the only regular saver, every 15 minutes, and it wrote status and "last seen" but not the latency it
+had just measured, so a Pi moved to a cable still read 264 ms and the Tegra 1036 ms (really 2.3). And every writer did
+load, modify, save of the *whole* file on a threaded server with no lock: a heartbeat or a run held a copy loaded
+seconds or minutes earlier, so whichever saved last silently undid the reports, registrations and shard bookings
+that landed in between. The watchdog, a separate process doing the same, made it worse every 15 minutes.
+**Decision:** the authority's serve re-measures every node every minute on a background beat (never on a request
+path) and saves **only** the liveness fields, merged into the file as it is now (`merge_into_fleet_file`). Every
+in-process writer takes one lock. The run and calibration paths save only what they measured. The watchdog stays the
+independent witness at 15 minutes (it is the one thing that can see the serve itself die) and writes the file **only
+when the serve is down**. Shortening the watchdog was considered and rejected: it would have made the race 15× likelier.
+
+**2 · Memory is measured from the device, never from a side channel.** The NUC's Arc (Vulkan) was planned with 16,311 MB:
+its eGPU's VRAM, because the box's capacity reporter asked `nvidia-smi` and filed the answer under the box's main node.
+Looking closer showed it was worse than one box: `init` never recorded a memory figure for a Vulkan GPU at all, so on
+every Intel Arc or AMD install the planner started at a capacity of **zero** until something else wrote a number.
+**Decision:** a donor's memory comes from its own `ggml-rpc-server` (llama.cpp's RPC `GET_DEVICE_MEMORY`, i.e.
+`ggml_backend_dev_memory()` for the device it actually lends): VRAM for CUDA, the shared heap for a Vulkan iGPU, RAM for
+a CPU donor, in the same terms llama.cpp allocates by. It's spoken directly (HELLO with no transport upgrade, then the
+query; stdlib only), at most every 10 minutes per node, and never for a donor holding a pooled shard: a
+single-client server would make the probe wait out its timeout. A GPU node's `vram_total_mb` is then marked
+`vram_source: rpc`, and the authority **refuses** a reported VRAM total for any non-CUDA node and for any node whose
+device has answered. So an old reporter on anyone's install cannot bring this back. `init` also reads a Vulkan
+device's size from `--list-devices`, and the reporter sends VRAM only for the CUDA device its node lends.
+**Measured on the live fleet by the probe:** Arc 23,163 MiB (it had 16,311), Pi 5 7,932, Pi 4 3,796, Tegra 3,956, the
+laptop's 5090 24,435. The Arc's planning capacity went from 15,006 MB to 21,309 MB. Ties to [D39] (pooled shards),
+[D41] (link class), [D46] (a second card is its own node).
+
+---
+
+## D50 — A role reads its knowledge folder: keyword retrieval first, in the stdlib, and it says what it could not read (2026-09-22)
+**Context:** D48 defined a role as `base + prompt + belt + knowledge + goal`, and after D49 knowledge was the only part
+that did nothing: a role with a `knowledge` folder answered as if the folder didn't exist, and said so on every
+request. It was the part the public stock Researcher needed to be real, and the prerequisite for the maintainer's own
+research role (which stays private: D48's wall, the vertical is data, not code).
+
+**Decision 1: the first slice is BM25 keyword retrieval, pure stdlib.** No embedding model, no vector store, no new
+dependency, no index file to go stale. The folder is chunked (180-word passages overlapping by 40, so a sentence cut at
+a boundary is whole in one of them), indexed in memory, and re-indexed only when a file's size or modification time
+changes. Each request is searched with the user's latest message; up to **4 passages, at most ~6,000 characters**,
+are handed to the model. Embeddings through the resident server are the upgrade path, not the prerequisite: keyword
+search is honest about what it is (it finds shared *words*, not shared *meaning*; a synonym misses), and it works
+today on every box, a Pi included.
+
+**Decision 2: the passages go inside the role's own system message, tagged for citation.** Not as a second system
+message: several chat templates render a system message only at position 0, and a passage the template silently
+drops is the D48 tool-result failure again, with nothing to notice it. Each passage is tagged `[K1]`…`[K4]` with its
+file (and page, for a PDF), and the block tells the model to cite by tag and to say so when the passages don't answer.
+A delegated chat (D34) carries the block with it, so the folder has to exist only on the host the client talks to.
+
+**Decision 3: never silent about what was not read (D31).** A researcher's papers are mostly PDFs, and "the model read
+your folder" must not quietly mean "the model read the three `.md` files in it". Plain text, Markdown, reST, CSV, JSON
+and HTML are read by the stdlib; **PDFs need `pypdf`, which is optional**. Without it, every PDF is counted and reported,
+as are scanned PDFs with no text layer, unsupported types, oversized files (8 MB) and anything past a 2,000-file cap. The
+report appears in the role's note on every request, in `/roles.json` (`knowledge_status`), and in `genghis roles <id>`.
+`genghis roles <id> <question>` previews exactly which passages the model would get. A missing folder, or a question
+that shares no keyword with anything, adds nothing and says so. Retrieval that fails never takes the chat down.
+
+**Verified end-to-end on the live authority:** a temporary role pinned to the warm Qwen2.5-1.5B, whose folder held
+one made-up fact (a lighthouse keeper's name) and one unrelated file, was asked about the fact through `/v1`. The
+serve logged `knowledge: 1 passage(s) from lighthouse.md` (the right file), and the model answered correctly in 0.5 s.
+The same model **without** the role invented a confident, wrong answer. **Honesty note from the same run:** the 1.5B
+used the passage but ignored the instruction to cite it by tag. Citation discipline is a property of the model, so a
+role that must cite should pin or require a larger one. Unit-tested before that in a scratch home: the right file
+cited, a PDF and a PNG reported as skipped, nothing injected when nothing matches. Ties to [D31], [D34], [D36], [D48].
+
+---
+
 ## D49 — Adapters make a role's belt real: the model picks the verb, a human wrote the sentence; everything is off until you arm it (2026-09-22)
 **Context:** D48 left a role's tool belt *declared* — GENGHIS told the model nothing about it and the chat client
 did any executing. Step 3 of the roles phase is the belt that acts. **The design was forced by the first adapter.**
@@ -1133,7 +1306,7 @@ the strongest card. The laptop was modeled as a pure conductor; it wasn't even a
   `free_mem_mb≈20000`, `latency:0`); `plan_v3`/`run_decision` fill `CUDA0` to capacity before recruiting RPC
   donors; device list becomes `CUDA0,RPC0,…`.
 - **C — validate:** a ~13B model → `CUDA0` only, donors idle; a 70B-class model → 5090 anchored + donor
-  overflow, beating the old all-remote tok/s (log to poc/RESULTS.md).
+  overflow, beating the old all-remote tok/s (log to [poc/RESULTS.md](poc/RESULTS.md)).
 
 **Prereq check (2026-09-03):** **PASSED** — CUDA Toolkit **13.3** (≥12.8 required for Blackwell) + cmake
 4.3.3 present on the laptop. Phase A is unblocked.
@@ -1432,4 +1605,4 @@ headroom keeps it from ever bottlenecking. See charter "coordinator's three pill
     Revisit after the 1080 Ti and Phase 2. Captured in README "What can be a donor?".
 
 ---
-_Generated from the project's private decision log on 2026-09-22._
+_Generated from the project's private decision log on 2026-09-23._

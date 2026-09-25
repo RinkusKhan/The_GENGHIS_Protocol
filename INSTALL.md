@@ -9,7 +9,7 @@ Set up a GENGHIS fleet on your own hardware. It has four kinds of node — insta
 | **Donor** | lends CPU / GPU / RAM to a run (`ggml-rpc-server`) | any Linux box, Pi, NVIDIA box, or Mac |
 | **TV (HEARTH)** | the optional household surface | a Samsung Tizen TV — see [`docs/TV_CLIENT_INSTALL.md`](docs/TV_CLIENT_INSTALL.md) |
 
-One machine can hold several roles (the reference Pi 5 is coordinator **and** a donor; the laptop is client **and** the anchor GPU donor).
+One machine can hold several roles (the reference fleet's authority, an Intel NUC, is coordinator **and** a donor of two GPUs; the laptop is client **and** the anchor GPU donor).
 
 ---
 
@@ -20,17 +20,17 @@ confirmation), **guides** the two things it can't (the VS C++ workload on Window
 builds llama.cpp **at the pinned commit**, runs `genghis init`, and makes the role **reboot-proof**. Idempotent — re-run any time.
 
 ```powershell
-# Windows client (add -Serve -Coord <pi-ip> to also host /v1 + chat; -Donor to also lend this GPU; -PreflightOnly = check only)
+# Windows client (add -Serve -Coord <authority-ip> to also host /v1 + chat; -Donor to also lend this GPU; -PreflightOnly = check only)
 powershell -ExecutionPolicy Bypass -File install\install-windows.ps1
 ```
 The Windows installer picks the accelerator itself: NVIDIA + CUDA toolkit → `build-cuda`; **any other GPU (Intel Arc / AMD) +
 the Vulkan SDK → `build-vulkan`** (it offers to install the SDK); else CPU. A box can be **client + donor at once** (D27) —
-e.g. the NUC: `-Serve -Donor -Coord <pi-ip>` makes its Arc the local anchor for its own runs *and* an RPC donor for everyone else.
+e.g. the NUC: `-Serve -Donor -Coord <authority-ip>` makes its Arc the local anchor for its own runs *and* an RPC donor for everyone else.
 ```bash
 # Linux — coordinator / donor / client
 bash install/install-linux.sh --role coordinator
 bash install/install-linux.sh --role donor --accel cpu|cuda|vulkan
-bash install/install-linux.sh --role client --coord <pi-ip>
+bash install/install-linux.sh --role client --coord <authority-ip>
 ```
 An **NVIDIA DGX Spark** is a Linux CUDA donor (`--role donor --accel cuda`) — see [`docs/DGX_SPARK.md`](docs/DGX_SPARK.md).
 Details + what each installer checks: [`install/README.md`](install/README.md). The sections below are the
@@ -42,7 +42,7 @@ Details + what each installer checks: [`install/README.md`](install/README.md). 
 
 1. **Every inference node builds the SAME pinned llama.cpp commit.** llama.cpp RPC has **zero** cross-version tolerance — a mismatched build fails silently or weirdly. The `donor-setup-*.sh` scripts check out the pinned commit automatically; don't hand-update one node.
 2. **The Python command is platform-specific.** **Linux / macOS → `python3`**. **Windows → `py`**. `python`/`py` usually don't exist on Linux — that's the "command not found."
-3. **Ports:** donors listen on **`50052`**, the coordinator/HEARTH on **`8899`**. Open them on the LAN. (Pi OS has no firewall by default; Windows blocks inbound on a *Public* network — set it to Private or add a rule, which is why the always-on `serve` lives on the Pi, not the laptop.)
+3. **Ports:** donors listen on **`50052`**, the coordinator/HEARTH on **`8899`**. Open them on the LAN. (Pi OS has no firewall by default; Windows blocks inbound on a *Public* network — set it to Private or add a rule, which is why the always-on `serve` lives on the always-on authority, not the laptop.)
 
 ---
 
@@ -61,7 +61,7 @@ and auto-recovers the moment you install it — no silent looping.)*
 
 **Steps:**
 ```bash
-# on the Pi, as a normal user
+# on the authority, as a normal user
 mkdir -p ~/genghis && cd ~/genghis
 # copy poc/genghis_coordinator.py, poc/genghis_mdns.py, poc/serve.sh here (git clone or scp)
 # GENERATE YOUR OWN fleet.json + config.json for THIS machine (D22 — ships nothing of ours):
@@ -74,7 +74,7 @@ nohup bash ~/genghis/serve.sh >/dev/null 2>&1 &
 ```
 **Verify** (from any machine on the LAN):
 ```bash
-curl -s http://<PI_IP>:8899/fabric        # should print a FAB / NODE… snapshot
+curl -s http://<AUTHORITY_IP>:8899/fabric        # should print a FAB / NODE… snapshot
 ```
 **Zero-config discovery:** `serve` advertises itself on the LAN via mDNS (`_genghis._tcp`, UDP 5353, pure
 stdlib — no zeroconf/Avahi). Clients **find it automatically** — no need to know the IP:
@@ -83,7 +83,7 @@ python3 genghis_coordinator.py discover   # prints the coordinator URL it found
 ```
 Planning commands auto-discover when the default/configured coordinator is unreachable. To pin one instead,
 set `GENGHIS_COORD=<host>` (or the full `GENGHIS_FLEET_URL`).
-**Manage it from a browser:** open **`http://<PI_IP>:8899/`** — the **web admin** page: give nodes friendly
+**Manage it from a browser:** open **`http://<AUTHORITY_IP>:8899/`** — the **web admin** page: give nodes friendly
 names, set roles, and choose the default run-type. Changes save to the coordinator (`config.json`) and take
 effect everywhere the fabric shows (including the TV).
 
@@ -99,7 +99,7 @@ don't copy a big GGUF to each. Stage GGUFs in `~/genghis/models/` on the coordin
 `/models`; another launch machine can then use a **bare model name** and GENGHIS **fetches-if-missing** (no
 re-downloading 40 GB per machine). This is a manual, opt-in step — nothing is pushed automatically.
 ```bash
-scp your-model.gguf <PI_USER>@<PI_IP>:~/genghis/models/     # stage a model on the coordinator store
+scp your-model.gguf <USER>@<AUTHORITY_IP>:~/genghis/models/     # stage a model on the coordinator store
 python3 genghis_coordinator.py models                       # list the store + local cache
 python3 genghis_coordinator.py models pull your-model.gguf  # pull one into this machine's cache
 ```
@@ -121,7 +121,7 @@ chmod +x donor-setup-linux.sh donor-serve.sh donor-report.sh
 # make the donor role reboot-proof (this is what a hand-run tmux session does NOT do):
 ( crontab -l 2>/dev/null | grep -v donor-serve.sh;  echo "@reboot $HOME/genghis/donor-serve.sh  >> $HOME/genghis/rpc.log 2>&1" ) | crontab -
 ( crontab -l 2>/dev/null | grep -v donor-report.sh; echo "@reboot $HOME/genghis/donor-report.sh <node-id> >> $HOME/genghis/report.log 2>&1" ) | crontab -
-export GENGHIS_COORD=<PI_IP>:8899    # point at YOUR coordinator
+export GENGHIS_COORD=<AUTHORITY_IP>:8899    # point at YOUR coordinator
 nohup ~/genghis/donor-serve.sh  >> ~/genghis/rpc.log    2>&1 &   # start serving now
 nohup ~/genghis/donor-report.sh <node-id> >> ~/genghis/report.log 2>&1 &   # start self-reporting RAM
 ```
@@ -140,9 +140,11 @@ Same as §2 but with the CUDA script — the shard runs **on the GPU**:
 ./donor-setup-cuda.sh           # installs driver/CUDA if missing, builds -DGGML_CUDA=ON at the pinned commit
 # then the SAME donor-serve.sh + donor-report.sh crons as §2 (report picks up VRAM via nvidia-smi)
 ```
-Set `CUDA_ARCH` for your card (**Blackwell 120**, Ada 89, Ampere 86, Turing 75, Pascal 61).
-> **Known-hard case:** Blackwell (RTX 50-series) on Ubuntu 26.04 needs the **CUDA 13** toolkit + **GCC-14**
-> host + a small glibc-2.41 `rsqrtf` patch (llama.cpp #19100) — the script applies these. Pascal (GTX
+The card's architecture is read from the driver (`nvidia-smi` compute capability 12.0 → `CUDA_ARCH=120`); set
+`CUDA_ARCH` yourself only to override it (**Blackwell 120**, Ada 89, Ampere 86, Turing 75, Pascal 61).
+> **Supported cards: RTX 20 / GTX 16-series (Turing) and newer (D52); GTX 10-series is experimental**, all on **CUDA 13.2 or newer from NVIDIA's repository**;
+> the script refuses older cards (`GENGHIS_ALLOW_OLD_GPU=1` to try anyway) and, if CUDA 13.2+ is missing, stops and
+> prints NVIDIA's install commands. With 13.2 no GCC-14 host compiler or glibc patch is needed. (Older notes: Pascal (GTX
 > 10-series) needs Ubuntu 24.04 + driver ≤570 (see [`DECISIONS.md`](DECISIONS.md) D4).
 > **CUDA 13.0 vs glibc 2.43** (Ubuntu 26.04): `nvcc` fails on `rsqrt`/`rsqrtf` exception specs before it compiles
 > anything of ours. Install **13.2 or newer** from NVIDIA's repo (`cuda-keyring` for `ubuntu2404`, then
@@ -192,7 +194,7 @@ cmake --build build-vulkan --config Release --target llama-cli llama-server ggml
 The coordinator looks for `build-cuda`, then `build-vulkan`, then `build-rpc`. Point it at your fleet + a model:
 ```powershell
 $env:GENGHIS_MODEL = "E:\models\<model>.gguf"
-$env:GENGHIS_FLEET_URL = "http://<PI_IP>:8899/fleet.json"   # point at YOUR coordinator
+$env:GENGHIS_FLEET_URL = "http://<AUTHORITY_IP>:8899/fleet.json"   # point at YOUR coordinator
 py genghis_coordinator.py decide --goal balanced
 ```
 
@@ -210,13 +212,13 @@ Set-Content (Join-Path $s 'GENGHIS-serve.vbs') 'CreateObject("WScript.Shell").Ru
 just ran the installer with `-Coord`, start serve from a **new** window so the `GENGHIS_COORD` user variable is visible.
 
 [`poc/serve-laptop.ps1`](poc/serve-laptop.ps1) is a crash-restart loop (mirrors `serve.sh`); the Startup
-entry restarts it at logon. (The always-on Pi in §1 can also host `/v1` — it just doesn't use the 5090.)
+entry restarts it at logon. (The always-on authority in §1 hosts `/v1` too, on its own GPU if it has one; a laptop serve is for the box you sit at.)
 
 **Chat GUI (optional) — Open WebUI.** Point the adopted human GUI at the coordinator's `/v1`:
 ```powershell
 docker run -d -p 3080:8080 --name open-webui --restart always -e WEBUI_AUTH=False `
   -e OPENAI_API_BASE_URL=http://host.docker.internal:8899/v1 -e OPENAI_API_KEY=none `
-  -v open-webui:/app/backend/data ghcr.io/open-webui/open-webui:v0.11.3
+  -v open-webui:/app/backend/data ghcr.io/open-webui/open-webui:v0.11.4
 ```
 Open `http://localhost:3080` (no login). Image tag is **pinned** (D18) — bump deliberately, not via `:latest`.
 
@@ -368,7 +370,11 @@ A box registers with **the** authority; every host reads from it, so one `--coor
 
 ## The watchdog (on the authority)
 An independent 15-minute pass that probes every node's RPC port and every `serve`, logs one line, and feeds the
-Control Room's *verified HH:MM* badge. Install once on the authority:
+Control Room's *verified HH:MM* badge. It is the witness that notices when the serve itself has died. Keeping the saved
+fleet record current is the serve's own job, every minute (D51); the watchdog writes that record only while the serve
+is down. It also sets up a chat UI on this box for local models (Open WebUI's ~30 built-in tools off; they make a
+local model call tools instead of answering). **`install-linux.sh --role coordinator` adds it**, and `verify` checks it;
+by hand, once, on the authority:
 ```bash
 ( crontab -l 2>/dev/null | grep -v watchdog.py; echo "*/15 * * * * /usr/bin/python3 $HOME/genghis-src/poc/watchdog.py >> $HOME/genghis-src/poc/watchdog.cron.log 2>&1" ) | crontab -
 ```
@@ -376,28 +382,32 @@ Control Room's *verified HH:MM* badge. Install once on the authority:
 
 ## Verify the whole fleet
 ```bash
-python3 genghis_coordinator.py heartbeat     # every node UP? (py … on Windows)
-python3 genghis_coordinator.py decide        # a plan over the live fleet, no run
+python3 genghis_coordinator.py verify                  # THIS box: really in the fleet, doing what its class should? (+ bookmarks)
+python3 genghis_coordinator.py verify <node-id> --bench   # from the authority: every layer on that node, at what speed
+python3 genghis_coordinator.py heartbeat               # every node UP? (py … on Windows)
+python3 genghis_coordinator.py decide                  # a plan over the live fleet, no run
 ```
+`verify` is read-only and prints the fix for anything that isn't right; the installers run it as their last step.
+What each check means: [`docs/agents/when-verify-fails.md`](docs/agents/when-verify-fails.md).
 
 ## Troubleshooting
 | Symptom | Cause / fix |
 |---|---|
 | `python: command not found` (Linux/Pi) | use **`python3`** (not `python`/`py`). |
 | coordinator won't start after a reboot / `serve.log` says "python3 NOT FOUND" | `python3` isn't installed: `sudo apt install -y python3` — `serve.sh` re-checks every 30s and recovers on its own. |
-| I ran the installer on a new box and it doesn't appear anywhere | Update the repo on that box (`git pull`) and run `python3 genghis_coordinator.py register --coord <authority-ip>` (older builds never announced the node — D33). It must also be *serving*: a donor needs `ggml-rpc-server` listening on `:50052` (`donor-serve.sh` / the Windows `-Donor` launcher), else it registers as a client without a port. |
+| I ran the installer on a new box and it doesn't appear anywhere | Update the repo on that box (`git pull`, or download the ZIP again) and run `python3 genghis_coordinator.py register --coord <authority-ip>` (older builds never announced the node — D33). It must also be *serving*: a donor needs `ggml-rpc-server` listening on `:50052` (`donor-serve.sh` / the Windows `-Donor` launcher), else it registers as a client without a port. |
 | a node shows **DOWN** after a reboot | its **`donor-serve.sh`** isn't running — start it + add the `@reboot` cron (§2). Confirm port `50052` is reachable. |
 | **(Linux, Vulkan/Arc/AMD)** everything worked, then after a **reboot** every model fails: `llama-server exited (code 1)`, `no devices`, `--list-devices` is empty, the Control Room shows the host with no GPU | Your user is **not in the `render`/`video` groups** (`/dev/dri/renderD*` is `root:render 0660`). It worked before only through the desktop login's *temporary* ACL (the `+` in `ls -l /dev/dri`); a `serve`/`donor-serve.sh` started from cron has no such ACL. Fix once: `sudo usermod -aG render,video $USER`, then **log out and back in** (or reboot) — membership applies only to a new login. Check: `id -nG`. Current installers detect this in preflight (`install-linux.sh --preflight`). |
 | a run fails / weird output on a donor | that donor built a **different llama.cpp commit** — re-run `donor-setup-*.sh` (golden rule #1). |
 | GPU donor runs slow / on CPU | wrong `CUDA_ARCH`, or the CUDA preflight failed — check `rpc.log`; the script refuses to serve on CPU fallback rather than lie. |
 | coordinator unreachable | `serve` down (`curl :8899/fabric`), wrong `GENGHIS_FLEET_URL`, or a firewall blocking `:8899`. |
 | **Windows:** `:8899` answers on `localhost` but times out from other devices (RPC `:50052` still works) | Windows made a *per-app* `python.exe` firewall rule that only applies to the **Private** profile; the moment the NIC is reclassified **Public** (seen after an RDP reconnect) it stops matching. Fix once, in an **admin** PowerShell: `New-NetFirewallRule -DisplayName 'GENGHIS serve 8899' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8899 -Profile Any` (the installer's `-Serve` offers this when run as admin). Check the profile with `Get-NetConnectionProfile`. |
-| **Windows:** installer dies at preflight with a `py.exe … NativeCommandError` / "Python install manager" message | The new Windows *Python install manager* (`py.exe` 26.x) can exist with **no interpreter** behind it and prints notices to stderr. Update the repo (`git pull`) — the installer now looks for a real interpreter and offers `winget install Python.Python.3.12`. After any winget install, **open a new PowerShell window** before re-running. |
+| **Windows:** installer dies at preflight with a `py.exe … NativeCommandError` / "Python install manager" message | The new Windows *Python install manager* (`py.exe` 26.x) can exist with **no interpreter** behind it and prints notices to stderr. Update the repo (`git pull`, or download the ZIP again) — the installer now looks for a real interpreter and offers `winget install Python.Python.3.12`. After any winget install, **open a new PowerShell window** before re-running. |
 | **Windows:** the first chat fetches the model **from itself** / `404` from `http://127.0.0.1:8899/models` | The serve was started from a shell opened *before* the installer set `GENGHIS_COORD`, so it never saw it. Current builds resolve the repo from `fleet.json`'s `coordinator` regardless; otherwise open a new window (or reboot) so the user env var is visible, then restart serve. |
 | chat says *"loading … into VRAM"* then *"llama-server exited (code 1)"* and falls back to the slow path | The warm server couldn't start. Its own output is in **`poc/resident.log`** and the reason is shown under the Control Room's model list (`/registry.json` → `resident.error`). Usual causes: the model file isn't where it says (a stale path from another machine), not enough VRAM, a Vulkan driver missing an extension. |
 | chat says *"the most this model can hold on this GPU is N tokens"* | The conversation outgrew the largest context the model + GPU allow (D32). Start a new chat, or shorten this one. To force a size: `config.json` → `"resident_ctx": 8192` (it must still fit). |
 | a model in the list is the wrong size / `failed to load model` on a file you know is good | A truncated copy (an interrupted download that was renamed into place by an older build). Delete the small `.gguf` in `poc/models/` and re-pull (`models pull <name>`); current builds keep an incomplete transfer as `.part` and resume it. |
-| `serve.log` / `rpc-serve.log` is unreadable (CJK-looking mojibake) | An older launcher wrote the first line as UTF-16. `git pull`, delete the log, restart the launcher — every line is UTF-8 now. |
-| (Pi) `pkill -f "genghis_coordinator.py serve"` over SSH kills **your own SSH session** | its command line matches the pattern. Use `kill $(pgrep -f '^/usr/bin/python3 genghis_coordinator.py serve')` — the `serve.sh` loop restarts it in 5 s. |
+| `serve.log` / `rpc-serve.log` is unreadable (CJK-looking mojibake) | An older launcher wrote the first line as UTF-16. Update the repo (`git pull` or a fresh ZIP), delete the log, restart the launcher — every line is UTF-8 now. |
+| `pkill -f "genghis_coordinator.py serve"` over SSH kills **your own SSH session** | its command line matches the pattern. Use `pkill -f 'genghis_coordinator[.]py serve'`: `[.]` still matches the serve but not the shell running the command (as long as the unbracketed name appears nowhere else in that same command). (An anchored `^/usr/bin/python3 genghis_…` pattern is fragile: the serve runs as `python3 -u …`, so it matches nothing and the serve is never restarted.) The `serve.sh` loop restarts it in 5 s. |
 
 See [`docs/COMMANDS.md`](docs/COMMANDS.md) for every command and [`USAGE.md`](USAGE.md) for day-to-day use.

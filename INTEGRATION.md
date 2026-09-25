@@ -111,6 +111,13 @@ We offer the **triad the self-hosted-LLM industry has standardized on** (DECISIO
 
 1. **OpenAI-compatible API — `/v1`** ✅ *live (streaming + non-streaming)* *(the spine; the recommended integration point)*
    - `GET /v1/models` ✅ and `POST /v1/chat/completions` ✅ — both **non-streaming** and **SSE streaming** (`"stream": true` → `chat.completion.chunk` events + `[DONE]`). Verified end-to-end on the pool (`laptop-5090`). Remaining refinements 🔜: real token-usage counts + proper per-model chat templates.
+   - **Attached documents are read** ✅: a message may carry a PDF or a text file as an OpenAI `file` content part
+     (`{"type": "file", "file": {"filename": "paper.pdf", "file_data": "data:application/pdf;base64,…"}}`; the Responses
+     API's `input_file` works too). The first host to receive it turns each document into text (PDF page by page, about
+     40,000 characters at most per document, and a cut is stated) before any model sees it. A document it can't read (no
+     `pypdf` on that host, a scanned PDF, an image or other type, an uploaded-file `file_id`) becomes a sentence telling
+     the model, and so the user, why, and the Thinking panel says the same. A request is never failed because a file
+     was attached. (Open WebUI reads a dropped PDF itself and sends text, so this is for every other client.)
    - **Any** OpenAI client works unchanged — just set `base_url` to the coordinator:
      ```python
      from openai import OpenAI

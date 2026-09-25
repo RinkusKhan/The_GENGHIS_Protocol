@@ -4,6 +4,8 @@
   "description": "Works in a running Blender scene through the blender adapter. Looks before it acts, and reports what it actually changed.",
 
   "goal": "balanced",
+  "prefer": ["Qwen3.5-9B-Q4_K_M.gguf", "Qwen2.5-14B-Instruct-Q4_K_M.gguf", "Qwen2.5-32B-Instruct-Q4_K_M.gguf"],
+  "_comment_prefer": "This role works THROUGH tools, so it needs a model that makes real tool calls. BlenderLLM is not on the list on purpose: it writes good Blender Python but emits its tool calls as plain text, which llama.cpp cannot parse, so the scene never changes. If none of these is in the library, the goal above picks, and the reply says so. Name the files your own library holds; the first one present that meets `requires` runs.",
 
   "requires": {
     "tools": "native",

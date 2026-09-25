@@ -44,9 +44,32 @@ if [ -z "$DEV" ]; then
 fi
 DEVARGS=(); [ "$DEV" != CPU ] && DEVARGS=(--device "$DEV")
 
+# ONE loop per port. The installer, INSTALL.md's manual steps and an @reboot cron can all start this script; a second
+# copy used to fail to bind every 5 s forever while the first kept the port (a fresh-box test, 2026-09-23). Now the
+# second copy says so and leaves. (No flock on the box: carry on without the lock rather than refuse to serve.)
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"/tmp/genghis-donor-serve-$PORT.lock"
+  if ! flock -n 9; then
+    echo "[$(date '+%F %T')] donor-serve: already running for port $PORT -- nothing to do" | tee -a "$LOG"
+    exit 0
+  fi
+fi
+
+port_taken(){ (: > "/dev/tcp/127.0.0.1/$PORT") >/dev/null 2>&1; }
+
 echo "[$(date '+%F %T')] donor-serve: $BIN  -H 0.0.0.0 -p $PORT -c ${DEVARGS[*]}  (device=$DEV)" >> "$LOG"
 # -c enables the RPC server's local cache. Restart loop: survives crashes; @reboot cron survives reboots.
+warned=0
 while true; do
+  # Something ELSE already serving this port (e.g. an rpc-server someone started by hand, in tmux): don't fail to
+  # bind and respawn every 5 s -- say so once a minute and wait for the port to free up.
+  if port_taken; then
+    if [ $((warned % 2)) -eq 0 ]; then
+      echo "[$(date '+%F %T')] donor-serve: port $PORT is already served by another process; waiting (stop it and this loop takes over: pgrep -af ggml-rpc-server)" >> "$LOG"
+    fi
+    warned=$((warned + 1)); sleep 30; continue
+  fi
+  warned=0
   "$BIN" -H 0.0.0.0 -p "$PORT" -c "${DEVARGS[@]}" >> "$LOG" 2>&1
   echo "[$(date '+%F %T')] rpc-server exited — restarting in 5s" >> "$LOG"
   sleep 5

@@ -4,6 +4,10 @@
   "description": "Works a question through sources and cites them. The subject is yours — fill the tool belt with the databases your field uses, and point `knowledge` at your own papers.",
 
   "goal": "balanced",
+  "prefer": ["Qwen3.5-9B-Q4_K_M.gguf", "Qwen3.8-27B-Q6_K.gguf", "Qwen3.8-27B-Q4_K_M.gguf"],
+  "think": true,
+  "max_tokens": 8192,
+  "_comment_prefer": "Qwen3.5-9B first: it fits one card (the NUC's 5060 Ti, ~60 t/s), so it can use tools, and it reads images and long sources (256k). Qwen3.8-27B reads deeper but needs two cards on the NUC, where it is slow and cannot use tools. Thinking is ON for this role (think: true) with room to finish (max_tokens); for plain chat the same model runs with thinking off. Name the files your own library holds; the first one present that meets `requires` runs.",
 
   "requires": {
     "tools": "native",
@@ -13,11 +17,11 @@
 
   "system": "You are a research assistant. You work from sources, not from memory.\n\nRules you do not break:\n- Search before you answer. If you have tools, use them; a confident answer with no lookup is a failure, not a shortcut.\n- Cite what you used: title, author or source, and year. If you cannot cite it, say so in the same sentence as the claim.\n- Never invent a citation, a DOI, a quote, or a statistic. A fabricated reference is worse than no answer.\n- Distinguish what the sources say from what you infer. Mark inference as inference.\n- Say \"I don't know\" and \"the sources disagree\" plainly. Both are useful answers.\n- Report the weight of evidence, not just its direction: how many sources, how good, how recent, and who dissents.\n- When a question is outside what you can source, say which specialist or database would hold the answer.\n\nBe concise. Lead with the finding, then the evidence, then the caveats.",
 
-  "tools": [],
+  "tools": ["web"],
 
-  "_comment_tools": "The belt is deliberately EMPTY — a filled one would make this a researcher of some particular field, which is your choice, not ours. Name the tools your chat client exposes, e.g. a general-web belt: [\"web_search\", \"fetch_url\"]; a biomedical belt: [\"pubmed_search\", \"clinical_trials_search\"]; a naturalist belt: [\"inaturalist\", \"gbif\"]; a legal belt: [\"case_law_search\"]. GENGHIS declares the belt and tells you when a request arrives without it; installing tools is your chat client's job.",
+  "_comment_tools": "The belt names the `web` adapter (search, read_page). It contributes tools only when adapters/web.json has \"enabled\": true; otherwise the model is told it has no tools. Add your field's databases as their own adapters, or tools your chat client exposes.",
 
-  "_comment_knowledge": "Add \"knowledge\": \"/path/to/my/papers\" once retrieval is built. Declaring it today is honest but inert — GENGHIS will say the model is NOT reading it.",
+  "_comment_knowledge": "Add \"knowledge\": \"~/my-papers\" (absolute, ~, or relative to this file) and every question is searched against it: up to 4 passages, tagged [K1]-[K4] with their file and page, go in front of it. Text, Markdown and HTML are read as they are; PDFs need pypdf in the serve's Python (Ubuntu/Debian: sudo apt install python3-pypdf; `verify` prints the exact command for your box). Anything it cannot read is named, never skipped quietly. Preview what the model would get: genghis roles researcher \"your question\". It is keyword search: ask with the words your papers use.",
 
   "_comment_requires": "tool_results matters more than it looks: some models (abliterated merges especially) ship a stripped chat template with no branch for a tool's reply, so the search runs, the answer returns, and the template throws it away. This role refuses such a model instead of citing things it never read."
 }

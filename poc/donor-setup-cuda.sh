@@ -15,8 +15,10 @@ RPC_PORT="${RPC_PORT:-50052}"
 WORKDIR="${WORKDIR:-$HOME/genghis}"
 # Pin the SAME commit the client was built from — RPC has no cross-version compatibility.
 PIN_COMMIT="${PIN_COMMIT:-eab8ee41f889ef7823af517e8098fb8a9b3cf601}"
-# Pascal (1080 Ti) = 61. Override for other GPUs (Turing 75, Ampere 86, Ada 89).
-CUDA_ARCH="${CUDA_ARCH:-61}"
+# The card's architecture: read from the driver below (12.0 -> 120) unless set here. Blackwell 120, Ada 89,
+# Ampere 86, Turing 75, Pascal 61. (It used to DEFAULT to 61 -- the first donor's GTX 1080 Ti -- which built a
+# Pascal-only binary for every card, and CUDA 13 cannot compile for Pascal at all.)
+CUDA_ARCH="${CUDA_ARCH:-}"
 
 echo "==> GENGHIS CUDA donor setup on $(hostname) ($(uname -m))"
 
@@ -38,19 +40,61 @@ if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi >/dev/null 2>&1; then
 fi
 echo "==> GPU detected:"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
+if [ -z "$CUDA_ARCH" ]; then
+  CUDA_ARCH="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' .')"
+  if [ -z "$CUDA_ARCH" ]; then
+    echo "!! Could not read the GPU's compute capability from the driver. Set it and re-run, e.g.:"
+    echo "   CUDA_ARCH=120 $0      # Blackwell 120, Ada 89, Ampere 86, Turing 75, Pascal 61"
+    exit 1
+  fi
+  echo "==> GPU architecture (from the driver): CUDA_ARCH=${CUDA_ARCH}"
+fi
 
 # ---------------------------------------------------------------------------
 # 2. Build toolchain + CUDA toolkit (nvcc)
 # ---------------------------------------------------------------------------
-sudo apt-get update
-sudo apt-get install -y build-essential cmake git libcurl4-openssl-dev
-if ! command -v nvcc >/dev/null 2>&1; then
-  echo "==> Installing CUDA toolkit (distro package)..."
-  # Distro package is the most robust 'just works' path on Ubuntu; provides a CUDA 12.x nvcc,
-  # which supports Pascal fine. (Alternative: NVIDIA's official CUDA apt repo for the newest toolkit.)
-  sudo apt-get install -y nvidia-cuda-toolkit
+# Build tools: only what is MISSING, announced (the installer's preflight offers these first; normally a no-op here).
+NEED=""
+for p in build-essential cmake git; do dpkg -s "$p" >/dev/null 2>&1 || NEED="$NEED $p"; done
+if [ -n "$NEED" ]; then
+  echo "==> installing the build tools this donor needs:$NEED  (sudo apt-get install)"
+  sudo apt-get update && sudo apt-get install -y $NEED
 fi
-echo "==> nvcc: $(nvcc --version | grep release || echo 'not found')"
+
+# Which cards (D52): NVIDIA RTX 20 / GTX 16-series (Turing, compute 7.5) and newer -- everything CUDA 13 still builds
+# for, so ONE toolkit rule covers them all. A GTX 10-series (Pascal) card is EXPERIMENTAL: CUDA 13 dropped it, it needs
+# CUDA 12 and a driver <= 570 (D4), and that path is not proven here yet. Refused with the reason;
+# GENGHIS_ALLOW_OLD_GPU=1 builds anyway, untested.
+if [ "${CUDA_ARCH:-0}" -lt 75 ] && [ "${GENGHIS_ALLOW_OLD_GPU:-0}" != 1 ]; then
+  echo "======================================================================"
+  echo " !!! $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1) is compute ${CUDA_ARCH}: older than GENGHIS supports"
+  echo "     (RTX 20 / GTX 16-series, Turing, and newer: D52). A GTX 10-series card is experimental: it needs"
+  echo "     CUDA 12 and a driver of 570 or older (D4). Re-run with GENGHIS_ALLOW_OLD_GPU=1 to try anyway."
+  echo "======================================================================"
+  exit 1
+fi
+
+# The toolkit (D52): ONE rule for every supported card -- CUDA 13.2 or newer, from NVIDIA's repository. Ubuntu's own
+# nvidia-cuda-toolkit is too old for an RTX 50-series card, and CUDA 13.0/13.1 fail against glibc 2.43 (Ubuntu 26.04)
+# on rsqrt/rsqrtf. 13.2 builds clean on 26.04 with the stock compiler (D46). NVIDIA installs nvcc under
+# /usr/local/cuda/bin, which is not on PATH by default.
+[ -x /usr/local/cuda/bin/nvcc ] && export PATH="/usr/local/cuda/bin:$PATH"
+NVCC_VER="$(nvcc --version 2>/dev/null | sed -n 's/.*release \([0-9]*\.[0-9]*\).*/\1/p' | head -1)"
+ver_ge(){ [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]; }   # ver_ge 13.2 13.2 -> true
+NEED_CUDA=13.2; [ "${CUDA_ARCH:-0}" -lt 75 ] && NEED_CUDA=12.0   # an opted-in Pascal card: CUDA 13 cannot build for it
+if [ -z "$NVCC_VER" ] || ! ver_ge "$NVCC_VER" "$NEED_CUDA" || { [ "$NEED_CUDA" = 12.0 ] && ver_ge "$NVCC_VER" 13.0; }; then
+  REPO="ubuntu2404/$( [ "$(uname -m)" = aarch64 ] && echo sbsa || echo x86_64 )"
+  echo "======================================================================"
+  echo " CUDA toolkit: ${NVCC_VER:-not installed} -- this donor needs CUDA 13.2 or newer from NVIDIA (D52)."
+  echo " Install it (the person runs these; they add NVIDIA's apt repository), then re-run this script:"
+  echo "   wget https://developer.download.nvidia.com/compute/cuda/repos/${REPO}/cuda-keyring_1.1-1_all.deb"
+  echo "   sudo dpkg -i cuda-keyring_1.1-1_all.deb && sudo apt-get update && sudo apt-get install -y cuda-toolkit-13-2"
+  echo " (Ubuntu 24.04 and 26.04 both use NVIDIA's ubuntu2404 repository. NVIDIA's own page is authoritative:"
+  echo "  https://developer.nvidia.com/cuda-downloads . Do NOT use Ubuntu's nvidia-cuda-toolkit package.)"
+  echo "======================================================================"
+  exit 1
+fi
+echo "==> nvcc: CUDA ${NVCC_VER} ($(command -v nvcc))"
 
 # ---------------------------------------------------------------------------
 # 3. Source (pinned)
@@ -140,16 +184,23 @@ echo "==> (also saved to ${INFO} — cat it any time)"
 # name the CUDA device with '-d CUDA0'. Without this the donor advertises system RAM and computes
 # on the CPU (catastrophically slow on a GPU box). Override RPC_DEVICE for multi-GPU (CUDA1, ...).
 RPC_DEVICE="${RPC_DEVICE:-CUDA0}"
-SESSION="genghis"
-if command -v tmux >/dev/null 2>&1; then
-  tmux kill-session -t "$SESSION" 2>/dev/null || true
-  tmux new-session -d -s "$SESSION" "'$BIN' -d ${RPC_DEVICE} -H 0.0.0.0 -p '${RPC_PORT}' -c"
-  echo "==> Serving on GPU device ${RPC_DEVICE} in tmux session '${SESSION}' (survives disconnect)."
-  echo "    view logs : tmux attach -t ${SESSION}   (detach: Ctrl-b then d)"
-  echo "    stop      : tmux kill-session -t ${SESSION}"
-  echo "    check     : pgrep -af ggml-rpc-server ; nvidia-smi"
+# ONE launcher serves ggml-rpc-server: donor-serve.sh (one instance per port, restarts on crash, the same thing the
+# @reboot cron runs). This script used to start its own copy in tmux as well, and a fresh-box test found the two
+# fighting over the port, the one actually serving unsupervised (2026-09-23). GENGHIS_NO_START=1 (the installer sets it)
+# means: build only; the caller starts donor-serve.sh.
+SERVE_SH=""
+for s in "$(cd "$(dirname "$0")" && pwd)/donor-serve.sh" "${WORKDIR}/donor-serve.sh" "$HOME/genghis-src/poc/donor-serve.sh"; do
+  [ -f "$s" ] && { SERVE_SH="$s"; break; }
+done
+if [ "${GENGHIS_NO_START:-0}" = 1 ]; then
+  echo "==> Built. Not starting a server here: the installer starts donor-serve.sh."
+elif [ -n "$SERVE_SH" ]; then
+  GENGHIS_RPC_BIN="$BIN" GENGHIS_RPC_PORT="$RPC_PORT" GENGHIS_RPC_DEVICE="$RPC_DEVICE" setsid nohup bash "$SERVE_SH" >/dev/null 2>&1 < /dev/null &
+  sleep 3
+  echo "==> Serving on GPU device ${RPC_DEVICE} on :${RPC_PORT} via $SERVE_SH (restarts on crash; log: $HOME/genghis/rpc.log)"
+  echo "    survive reboots: ( crontab -l 2>/dev/null | grep -v donor-serve.sh; echo \"@reboot GENGHIS_RPC_BIN=$BIN GENGHIS_RPC_DEVICE="$RPC_DEVICE" bash $SERVE_SH >/dev/null 2>&1\" ) | crontab -"
+  echo "    check: pgrep -af ggml-rpc-server"
 else
-  echo "==> tmux not found; installing and running detached is recommended: sudo apt-get install -y tmux"
+  echo "==> donor-serve.sh not found next to this script -- starting the server directly (it will NOT restart on a crash)"
   nohup "$BIN" -d "${RPC_DEVICE}" -H 0.0.0.0 -p "${RPC_PORT}" -c > "${WORKDIR}/rpc.log" 2>&1 &
-  echo "==> Running with nohup on GPU device ${RPC_DEVICE} (logs: ${WORKDIR}/rpc.log). stop: pkill -f ggml-rpc-server"
 fi

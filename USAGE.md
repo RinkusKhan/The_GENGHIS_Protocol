@@ -182,7 +182,8 @@ After a theme-file update, hard-refresh once (the browser caches the stylesheet)
 A host keeps **several** models warm at once — as many as its card holds — and only unloads the least-recently-used
 one when a new model genuinely doesn't fit beside them. The home base keeps `fit` (14B) and `fastest` (1.5B) both
 warm; the laptop keeps the 32B warm and, rather than unloading it for a small request, hands that request to a host
-that already has the small model warm. The *Thinking…* panel says which happened: *"… is warm here"*, *"loading …
+that already has the small model warm. A card lent over RPC — including a host's own eGPU — holds **one** warm model
+at a time (an RPC server serves one client): the bigger model gets it, a smaller one goes to another card. The *Thinking…* panel says which happened: *"… is warm here"*, *"loading …
 (first time; it stays warm after this)"*, *"loading … — making room by unloading …"*, or *"… is warm on nuc-155h;
 loading it here would evict … — handing this to nuc-155h instead"*. `/registry.json` → `resident.pool` lists them.
 

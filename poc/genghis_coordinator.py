@@ -4318,6 +4318,9 @@ def _plan_for(fleet, goal):
     _req_set("last_refusal", "")
     if not live_donors(fleet):
         return None
+    fleet = _without_held_endpoints(fleet)               # one warm server per RPC endpoint (_rpc_holders)
+    if not live_donors(fleet):
+        return None
     fleet, dec = plan_with_settle(fleet)
     _req_set("last_dec", dec)                            # D41: the ghost (dry_run_plan) reads the reach narrative from it
     if dec is None:                                      # model exceeds fleet capacity
@@ -4599,6 +4602,7 @@ def _pool_save():
             rows.append({"model": e["model"], "port": e["port"], "pid": getattr(pr, "pid", 0), "ctx": e.get("ctx"),
                          "mb": e.get("mb", 0), "total_mb": e.get("total_mb", e.get("mb", 0)), "shards": e.get("shards") or {},
                          "nodes": e.get("nodes") or [], "sig": e.get("sig"), "last_used": e.get("last_used", 0),
+                         "rpc": _entry_rpc(e),
                          "chosen": bool(e.get("chosen")), "escalated": bool(e.get("escalated"))})
         tmp = POOL_LEDGER + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -4643,6 +4647,7 @@ def adopt_pool():
                  "ctx": r.get("ctx"), "mb": r.get("mb", 0), "total_mb": r.get("total_mb", r.get("mb", 0)),
                  "shards": r.get("shards") or {}, "nodes": r.get("nodes") or [], "last_used": r.get("last_used", 0), "ready": True, "inflight": 0,
                  "chosen": bool(r.get("chosen")), "escalated": bool(r.get("escalated"))}   # a restart must not turn a chat's placement into a pin
+        entry["_rpc"] = r.get("rpc") or _entry_rpc(entry)    # the endpoints it holds (_rpc_holders): an older ledger has only the sig
         _POOL[model] = entry; n += 1
         print(f"[resident] adopted warm {os.path.basename(model)} on :{port} (pid {r.get('pid')})"
               + (f" across {' + '.join(entry['nodes'])}" if entry["shards"] else ""), flush=True)
@@ -4722,8 +4727,10 @@ def _free_port():
             return pt
     return None
 
-def _pool_evictions_for(model_file, n_ctx=None):
-    """Which warm entries would have to go to fit `model_file` (LRU order)? Empty if it fits beside them."""
+def _pool_evictions_for(model_file, n_ctx=None, rpc_list=None):
+    """Which warm entries would have to go to fit `model_file` (LRU order)? Empty if it fits beside them.
+    With the plan's `rpc_list`, also every warm entry holding one of those RPC endpoints (_rpc_holders) -- exactly the
+    ones _ensure_resident_locked will stop."""
     if model_file in _pool_alive():
         return []
     try:
@@ -4737,7 +4744,88 @@ def _pool_evictions_for(model_file, n_ctx=None):
         if held + need_mb <= budget:
             break
         out.append(e["model"]); held -= e.get("mb", 0)
+    # RPC takeover: the plan dials an endpoint one of our warm servers holds, so that server goes. Count it, so the chat
+    # says what it unloads and the D38 hand-over can send the chat to a host that already has this model warm instead
+    # (2026-09-26: the laptop had the 14B warm while the NUC tried to load it behind its 1.5B). From the PLAN, not a
+    # guess: a guess announced an unload that the planner then did not do.
+    for ep, e in (_rpc_holders(exclude_model=model_file).items() if rpc_list else []):
+        if ep in rpc_list and e["model"] not in out and not _is_pin(e):
+            out.append(e["model"])
     return out
+
+
+def _rpc_holders(exclude_model=None):
+    """{"ip:port": pool entry} for the RPC endpoints this host's live warm servers hold.
+    llama.cpp's rpc-server serves ONE client at a time: its accept loop runs each client to completion before it
+    accepts the next. A warm server keeps its connection for as long as it lives, so an endpoint it holds is closed
+    to every other server until it stops -- a second warm server dialling it waits in the listen queue, forever.
+    Seen 2026-09-26 on the NUC: after a reboot the 1.5B (the chat UI's title model) warmed onto the eGPU over
+    loopback, the 14B chat was planned onto the same card, and it sat at "Loading model" while the Pool drew both
+    as warm. The local-memory budget never noticed: an RPC plan puts nothing on this host's own card."""
+    out = {}
+    for k, e in _pool_alive().items():
+        if exclude_model and os.path.basename(k) == os.path.basename(exclude_model):
+            continue
+        for ep in _entry_rpc(e):
+            out[ep] = e
+    return out
+
+
+def _entry_rpc(e):
+    """The RPC endpoints a pool entry's server dials. Kept as `_rpc` when we start it; an ADOPTED server (after a serve
+    restart) gets them from the ledger, or -- from a ledger written before they were saved -- from its signature,
+    whose second field is the --rpc list. Without this an adopted server looked like it held nothing (2026-09-26)."""
+    if e.get("_rpc"):
+        return list(e["_rpc"])
+    parts = (e.get("sig") or "").split("|")
+    return [x for x in parts[1].split(",") if x] if len(parts) > 1 else []
+
+
+def _node_for_endpoint(ep, fleet=None):
+    try:
+        for d in (fleet or load_fleet()).get("donors", []):
+            if f"{d.get('ip')}:{d.get('port')}" == ep:
+                return d
+    except Exception:
+        pass
+    return None
+
+
+def _without_held_endpoints(fleet):
+    """Plan around the RPC endpoints this host's OTHER warm servers hold (see _rpc_holders) -- unless the model being
+    planned is the bigger one. The bigger model takes the card (_ensure_resident_locked moves the holder off first);
+    a smaller one is planned elsewhere. So the fast card ends up holding the biggest warm model, and a title call
+    and a chat never take turns evicting each other. A chosen placement (_is_pin) is always planned around."""
+    holders = _rpc_holders(exclude_model=active_model())
+    if not holders:
+        return fleet
+    try:
+        mine = os.path.getsize(model_path())
+    except OSError:
+        mine = 0
+    drop, freed = {}, {}
+    for d in fleet.get("donors", []):
+        e = holders.get(f"{d.get('ip')}:{d.get('port')}")
+        if not e:
+            continue
+        try:
+            theirs = os.path.getsize(e["model"])
+        except OSError:
+            theirs = 0
+        if _is_pin(e) or theirs >= mine:
+            drop[d.get("id")] = os.path.basename(e["model"])
+        else:
+            # The bigger model may take this card. An RPC server has one client, and that client is our holder, which
+            # _ensure_resident_locked stops first -- so plan it as the whole card, not "card minus what is leaving".
+            freed[d.get("id")] = {k: v for k, v in d.items() if k not in ("shard_held", "vram_free_mb")}
+    if freed:
+        fleet = dict(fleet, donors=[freed.get(d.get("id"), d) for d in fleet.get("donors", [])])
+    if not drop:
+        return fleet
+    print("  (planning around " + ", ".join(f"{nid} -- its RPC server is held by the warm {_tiny_model(m)}"
+                                           for nid, m in sorted(drop.items()))
+          + "; an RPC server serves one warm model at a time)", flush=True)
+    return dict(fleet, donors=[d for d in fleet.get("donors", []) if d.get("id") not in drop])
 
 
 def _stop_entry(entry, why=""):
@@ -5134,6 +5222,18 @@ def _await_resident(entry, logf, budget):
                 if not _LOADING.get("cached") and el > 20 and rate < 8.0 and sent < 0.10 * remote_mb:
                     _LOADING["cached"] = True; _LOADING["cache_inferred"] = True
                     print(f"[resident] {_LOADING.get('model')}: {sent/1024:.1f} GB in {int(el)} s at {rate:.0f} MB/s -- the donors already hold it (cache), only slivers are crossing", flush=True)
+                # Nothing at all has crossed in 3 minutes: even a pure cache load sends hundreds of MB of slivers in its
+                # first seconds. The RPC server has not accepted this client -- it is serving another one (an rpc-server
+                # serves one at a time, _rpc_holders). Say so and stop, rather than "loading…" for the 40-minute budget.
+                if el > 180 and sent < 0.25:
+                    if owner: _LOADING.clear()
+                    _resident["error"] = (f"{os.path.basename(model_file)}: the RPC server at {', '.join(rpc_list)} has not accepted this "
+                                          f"load in {int(el)} s -- it is serving another client (another warm model or another host's "
+                                          f"run holds it; an RPC server serves one at a time). Unload that first, or pick a model that fits elsewhere.")
+                    print(f"[resident] {_resident['error']}", flush=True)
+                    with _POOL_LOCK:
+                        _stop_entry(entry, "its RPC server never accepted it")
+                    return None
         if proc.poll() is not None:
             tail = ""
             try:
@@ -5246,6 +5346,20 @@ def _ensure_resident_locked(model_file, rpc_list, devices, tensor_split, n_ctx=N
                 if nid: shards[nid] = int(need_mb * w[i])
             else:
                 local_mb = need_mb * w[i]
+    # One warm server per RPC endpoint (_rpc_holders): anything of ours holding an endpoint this plan dials must stop
+    # first, or the new server waits in that rpc-server's listen queue forever. A chosen placement is not moved for this.
+    for ep, e in (_rpc_holders(exclude_model=model_file).items() if rpc_list else []):
+        if ep not in rpc_list or _pool_alive().get(e["model"]) is not e:
+            continue
+        if _is_pin(e):
+            _resident["pinned_by"] = os.path.basename(e["model"])
+            _resident["error"] = (f"{_tiny_model(os.path.basename(e['model']))} is warm across {' + '.join(e.get('nodes') or [])} and "
+                                  f"holds the RPC server at {ep}, which serves one warm model at a time. Unload it in the Control "
+                                  f"Room to run {_tiny_model(os.path.basename(model_file))} there, or pick a model that fits elsewhere.")
+            print(f"[resident] {_resident['error']}", flush=True)
+            return None
+        _stop_entry(e, f"it held the RPC server at {ep} that {os.path.basename(model_file)} needs -- an RPC server serves "
+                       f"one warm model at a time")
     budget = _local_anchor_free_mb()
     for e in sorted(_pool_alive().values(), key=lambda e: e.get("last_used", 0)):
         if _pool_held_mb() + local_mb <= budget:
@@ -8067,7 +8181,7 @@ def serve(fleet):
                     if not already:
                         # D38 hand-over: if loading this here would EVICT a bigger warm model, and another live host
                         # already holds this model warm, send the chat there instead of churning our own card.
-                        victims = _pool_evictions_for(model_path())
+                        victims = _pool_evictions_for(model_path(), rpc_list=rpc_list)
                         if victims and not self.headers.get(DELEGATED_HDR):
                             tgt = _delegate_target(name, load_fleet(), model_mem_mb())
                             # D45 follow-through: never evict a BIGGER warm model here for a smaller one another host can hold --

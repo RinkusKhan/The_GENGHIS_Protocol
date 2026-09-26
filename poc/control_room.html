@@ -415,8 +415,11 @@ function renderPool(fab, reg){
     if(n.pinnedMb>0){ const w=100*n.pinnedMb/n.card;
       // which pooled model spans this node? the holder's `pooled` map says so
       const holder = nodes.find(h=>Object.values(h.pooled||{}).some(ns=>ns.includes(n.id)));
-      const pm = holder ? Object.keys(holder.pooled).find(m=>holder.pooled[m].includes(n.id)) : null;
-      segs.push(`<div class="seg pin${pm?" pooled":""}" ${pm?`data-pooled="${esc(pm)}"`:""} style="left:${x}%;width:${w}%" title="${esc(n.why)}">${pm?esc(tinyModel(pm))+" shard":"shard"} · ${gb(n.pinnedMb)}${holder?" · for "+esc(holder.name):""}</div>`); x+=w; }
+      // EVERY pooled model with a piece here, not the first one found: the block is the node's whole parked total, and
+      // labelling it with one name drew a 1.5B as "12 GB" (2026-09-26, a 14B was on the same card)
+      const pms = holder ? Object.keys(holder.pooled).filter(m=>holder.pooled[m].includes(n.id)) : [];
+      const pm = pms[0] || null;
+      segs.push(`<div class="seg pin${pm?" pooled":""}" ${pm?`data-pooled="${esc(pm)}"`:""} style="left:${x}%;width:${w}%" title="${esc(n.why)}">${pms.length?pms.map(m=>esc(tinyModel(m))).join(" + ")+(pms.length>1?" shards":" shard"):"shard"} · ${gb(n.pinnedMb)}${holder?" · for "+esc(holder.name):""}</div>`); x+=w; }
     // this node's own warm models (one segment for the rest of `used`, labelled with the names)
     let own = n.heldMb!=null ? Math.max(0, n.heldMb - n.pinnedMb) : Math.max(0, used - n.pinnedMb);   // a donor's held memory IS its shard
     if(POOL_LOADING[n.id]) own = Math.max(0, own - POOL_LOADING[n.id].mb);   // the loading share is already in the pool's books: draw it once, as loading

@@ -160,7 +160,9 @@ Three things that will bite you, all learned the hard way:
 - **Give the second card its own host label** (`<box>-egpu`). A node is judged "this box" by *hostname*; if the second
   card shares the host's name, the host's own serve will treat it as its local anchor instead of dialling it over RPC.
 - **It is local-class, and that is the point.** GENGHIS knows a donor on the same box has no wire (D46): it can be the
-  faster card the planner prefers over the host's own, and it can hold a **warm model** over loopback. Moving the
+  faster card the planner prefers over the host's own, and it can hold a **warm model** over loopback — **one at a
+  time**: an RPC server serves one client, so a second warm model goes to another card, or the bigger of the two takes
+  this one and the smaller is unloaded (the chat says which). Moving the
   reference fleet's 5060 Ti from a 1 GbE box into the NUC's enclosure took it from **38 t/s to 228 t/s** — same card.
   Thunderbolt 4 (~32 Gb/s) is far more than a donor needs; a shard streams in once and stays.
 - **If the enclosure "does nothing":** check that *any* host sees anything on the cable at all (`boltctl list`,

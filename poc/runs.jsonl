@@ -13,3 +13,4 @@
 {"run_id": "2026-09-14T10-41-27_v1", "ts": "2026-09-14T10-41-27", "strategy": "v1_stream", "goal": "balanced", "model": "Qwen2.5-32B-Instruct-Q4_K_M.gguf", "model_mb": 20467, "live": ["gpu-5060ti", "nuc-155h"], "gen_tok_s": 4.0, "prompt_tok_s": 35.1, "wall_s": 206, "ok": true}
 {"run_id": "2026-09-15T13-13-35_v1abandoned", "strategy": "v1_stream", "goal": "balanced", "ok": false, "note": "client left; engine killed"}
 {"run_id": "2026-09-19T21-21-18_v1delegated", "strategy": "v1_delegate", "goal": "fastest", "model": "qwen2.5-1.5b-instruct-q4_k_m.gguf", "live": ["nuc-155h"], "ok": true, "note": "warm elsewhere; avoided evicting Qwen2.5-32B-Instruct-Q4_K_M.gguf"}
+{"run_id": "2026-09-26T16-08-47_v1abandoned", "strategy": "v1_stream", "goal": "fastest", "ok": false, "note": "client left; engine killed"}

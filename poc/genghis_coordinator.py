@@ -2250,7 +2250,7 @@ def adapter_reachable(a):
             return False, f"it runs on '{rem[1]}', which is not in the fleet"
         d, base = rem
         try:
-            r = _remote_json(base + "/adapter.json?id=" + urllib.parse.quote(a["id"]), ttl=5.0, timeout=4)
+            r = _remote_json(base + "/adapter.json?id=" + urllib.parse.quote(a["id"]), ttl=5.0, timeout=8)
         except Exception as e:
             return False, f"{d['id']}'s serve did not answer ({e.__class__.__name__})"
         if not r.get("enabled"):
@@ -2264,11 +2264,18 @@ def adapter_reachable(a):
     if a["transport"] != "blender-socket":
         return False, f"unknown transport '{a['transport']}'"
     try:
-        s = socket.create_connection((a["host"], a["port"]), timeout=2)
+        s = socket.create_connection((_dial_host(a["host"]), a["port"]), timeout=2)
         s.close()
         return True, f"{a['host']}:{a['port']} answers"
     except Exception as e:
-        return False, f"{a['host']}:{a['port']} — {e.__class__.__name__}"
+        return False, (f"Blender is not answering on {a['host']}:{a['port']} ({e.__class__.__name__}) -- is Blender open, with "
+                       f"its MCP add-on's server started (3D view sidebar, N -> BlenderMCP -> Connect)?")
+
+
+def _dial_host(h):
+    """"localhost" -> 127.0.0.1. Windows tries ::1 first, and an add-on listening on IPv4 only costs ~2 s per dial before the
+    fallback: the laptop's own Blender check took 4.1 s and the relaying host (4 s budget) reported its serve as silent."""
+    return "127.0.0.1" if str(h).strip().lower() == "localhost" else h
 
 
 def _blender_send(a, code, strict_json=False):
@@ -2276,7 +2283,7 @@ def _blender_send(a, code, strict_json=False):
     req = json.dumps({"type": "execute", "code": code, "strict_json": strict_json}) + "\0"
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(a["timeout"])
-        s.connect((a["host"], a["port"]))
+        s.connect((_dial_host(a["host"]), a["port"]))
         s.sendall(req.encode("utf-8"))
         buf = bytearray()
         while True:
@@ -7632,6 +7639,7 @@ def serve(fleet):
             # plain-goal chat arriving after a role chat would otherwise inherit that role's owned tools and
             # silently execute against them.
             self._role_note = self._role_label = None
+            self._role_notes = []
             self._role_think = None
             self._role_max = None
             self._owned_tools = {}
@@ -7670,6 +7678,7 @@ def serve(fleet):
                     self._owned_tools = res.get("owned_tools") or {}
                     if res.get("notes"):
                         print("[role] " + " | ".join(res["notes"]), flush=True)
+                        self._role_notes = list(res["notes"])     # ...and the person sees them too (Thinking panel)
             # Attached documents become text parts here, on the first host the request reaches -- after the role, so a
             # whole PDF never becomes the knowledge search's query; a delegated request (D34) arrives already converted.
             try:
@@ -8137,6 +8146,10 @@ def serve(fleet):
                 where = f"solo on {nodes[0]}" if len(nodes) == 1 else f"pooled across {', '.join(nodes)}"
                 if same_box_solo: where += " (this box's own eGPU, over loopback)"
                 think(f"GENGHIS · {goal} · {name} · {where}\n")
+                if getattr(self, "_role_label", None):
+                    think(f"  role {self._role_label}: {self._role_note}\n")
+                for _rn in getattr(self, "_role_notes", None) or []:
+                    think(f"  ⚠ {_rn}\n")        # a missing tool is said where the person looks, not only in the log
                 for _an in getattr(self, "_attach_notes", None) or []:
                     think(f"  {_an}\n")                    # what happened to each attached document, in plain words
                 # D34: if our plan needs the network, prefer a host that holds the model on its own GPU.

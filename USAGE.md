@@ -103,6 +103,12 @@ cache (`-c`, every GENGHIS launcher does) keeps the weights, and the next call l
 *working (N s)* with no byte count, the authority is not Linux (no `ss`) — it is still loading, just blind.
 
 ## Say what you want done — roles (D48–D50)
+> **Early — what to expect today.** A role is good instructions on a well-chosen model. It *acts* (searches, drives a
+> program) only through tools switched on in your home folder, which for now means editing a file there. Working: the
+> Researcher's web search and reading, the Blender role (while Blender is open, with its add-on server started), pictures
+> read by vision models. In progress: a Coder that edits and builds your code, and setting a role up from the chat. If a
+> role can't do what you asked, the Thinking panel says what is missing (the ⚠ lines).
+
 Besides the speed settings, the model list shows **roles**: `genghis-researcher`, `genghis-coder`, and any you add. Pick
 one like any model. A role is a way of working (its own instructions, the tools it may use, a folder of documents it
 reads, and a speed setting), and GENGHIS picks a model that can do it. If nothing on your fleet can, it refuses and

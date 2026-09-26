@@ -14,27 +14,31 @@
   <!-- ============ PROVEN: held part of a real model in a logged run ============ -->
   <text x="500" y="182" text-anchor="middle" fill="#34d399" font-size="13" font-weight="700" letter-spacing="1">PROVEN — measured in real pooled runs</text>
 
-  <g transform="translate(272,198)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#0c2a20" stroke="#34d399" stroke-width="1.5"/>
+  <g transform="translate(215,198)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#0c2a20" stroke="#34d399" stroke-width="1.5"/>
     <g transform="translate(0,30)" stroke="#34d399" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-18" y="-14" width="36" height="22" rx="2"/><path d="M-24 12 L24 12 L19 8 L-19 8 Z" fill="#34d399" stroke="none"/></g>
     <text x="0" y="66" text-anchor="middle" fill="#a7f3d0" font-size="11">Laptop</text>
     <text x="0" y="80" text-anchor="middle" fill="#6ee7b7" font-size="8.5">GPU · CUDA</text></g>
-  <g transform="translate(386,198)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#0c2a20" stroke="#34d399" stroke-width="1.5"/>
+  <g transform="translate(329,198)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#0c2a20" stroke="#34d399" stroke-width="1.5"/>
     <g transform="translate(0,30)" stroke="#34d399" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-17" y="-16" width="34" height="24" rx="2"/><path d="M-8 16 L8 16 M0 8 L0 16"/></g>
     <text x="0" y="66" text-anchor="middle" fill="#a7f3d0" font-size="11">Desktop / eGPU</text>
     <text x="0" y="80" text-anchor="middle" fill="#6ee7b7" font-size="8.5">GPU · CUDA</text></g>
-  <g transform="translate(500,198)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#0c2a20" stroke="#34d399" stroke-width="1.5"/>
+  <g transform="translate(443,198)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#0c2a20" stroke="#34d399" stroke-width="1.5"/>
     <g transform="translate(0,30)" stroke="#34d399" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-18" y="-11" width="36" height="22" rx="4"/><path d="M-11 5 H3"/><circle cx="11" cy="5" r="1.7" fill="#34d399" stroke="none"/></g>
     <text x="0" y="66" text-anchor="middle" fill="#a7f3d0" font-size="11">Mini-PC</text>
     <text x="0" y="80" text-anchor="middle" fill="#6ee7b7" font-size="8.5">iGPU · Vulkan</text></g>
-  <g transform="translate(614,198)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#0c2a20" stroke="#34d399" stroke-width="1.5"/>
+  <g transform="translate(557,198)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#0c2a20" stroke="#34d399" stroke-width="1.5"/>
     <g transform="translate(0,30)" stroke="#34d399" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-22" y="-15" width="44" height="30" rx="2"/><path d="M-18 -11 H12" stroke-dasharray="1.5 2.5"/><rect x="-6" y="-3" width="12" height="10" rx="1"/><rect x="14" y="-9" width="7" height="6" rx="1"/></g>
     <text x="0" y="66" text-anchor="middle" fill="#a7f3d0" font-size="11">Raspberry Pi</text>
     <text x="0" y="80" text-anchor="middle" fill="#6ee7b7" font-size="8.5">Pi 4 / Pi 5 · CPU</text></g>
-  <g transform="translate(728,198)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#0c2a20" stroke="#34d399" stroke-width="1.5"/>
+  <g transform="translate(671,198)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#0c2a20" stroke="#34d399" stroke-width="1.5"/>
     <g transform="translate(0,30)" stroke="#34d399" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-20" y="-14" width="40" height="28" rx="2"/><rect x="-13" y="-9" width="26" height="18" rx="1"/><path d="M-8 -9 V9 M-2 -9 V9 M4 -9 V9 M10 -9 V9"/></g>
     <text x="0" y="66" text-anchor="middle" fill="#a7f3d0" font-size="11">Jetson</text>
     <text x="0" y="80" text-anchor="middle" fill="#6ee7b7" font-size="8.5">Tegra X1 · CPU</text></g>
-  <text x="500" y="312" text-anchor="middle" fill="#64748b" font-size="10.5">also proven, but not a donor: a Samsung (Tizen) TV as a display surface</text>
+  <g transform="translate(785,198)"><rect x="-49" y="0" width="98" height="92" rx="12" fill="#0c2a20" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5 4"/>
+    <g transform="translate(0,30)" stroke="#34d399" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-22" y="-15" width="44" height="26" rx="2"/><path d="M-8 18 H8 M0 11 V18"/><path d="M-12 -6 Q-6 -10 0 -6 T12 -6" stroke-width="1.5"/></g>
+    <text x="0" y="66" text-anchor="middle" fill="#a7f3d0" font-size="11">Samsung TV</text>
+    <text x="0" y="80" text-anchor="middle" fill="#6ee7b7" font-size="8.5">Tizen · surface</text></g>
+  <text x="500" y="312" text-anchor="middle" fill="#64748b" font-size="10.5">dashed = proven as a display surface (the TV shows the fabric), not as a donor</text>
 
   <!-- ============ UNTESTED: should run llama.cpp, not yet measured ============ -->
   <text x="500" y="344" text-anchor="middle" fill="#fbbf24" font-size="13" font-weight="700" letter-spacing="1">UNTESTED — native or via a Linux layer, not yet measured</text>
@@ -97,6 +101,6 @@
     <g transform="translate(0,30)" stroke="#a78bfa" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-20" y="-15" width="40" height="26" rx="2"/><path d="M-8 18 H8 M0 11 V18"/><rect x="7" y="-3" width="12" height="9" rx="1.5" fill="#1c1633"/><path d="M9.5 -3 V-6 a3.5 3.5 0 0 1 7 0 V-3"/></g>
     <text x="0" y="72" text-anchor="middle" fill="#ddd6fe" font-size="11">webOS (LG) TV</text></g>
 
-  <text x="500" y="730" text-anchor="middle" fill="#64748b" font-size="11">Green = measured in real runs · Amber = expected to work, not yet measured · Violet = locked platform.</text>
+  <text x="500" y="730" text-anchor="middle" fill="#64748b" font-size="11">Green = measured in real runs (dashed: a surface, not a donor) · Amber = expected to work, not yet measured · Violet = locked platform.</text>
   <text x="500" y="746" text-anchor="middle" fill="#64748b" font-size="11">A model runs on any box whose memory holds it; how FAST it runs is set by the accelerator and the link.</text>
 </svg>

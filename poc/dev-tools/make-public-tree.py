@@ -31,6 +31,17 @@ DROP = [
     "poc/RESULTS.md", "poc/coordinator-notes.md",
     "docs/PUBLIC_RELEASE.md",
 ]
+
+
+def home_drops():
+    """Extra journal-only paths from $GENGHIS_HOME/PUBLIC_DROP.txt (one per line, '#' comments): files this
+    working tree tracks for the maintainer's own tooling that must not ship. Kept in the private home so the
+    shipping tool does not carry their names."""
+    home = os.environ.get("GENGHIS_HOME", "")
+    f = os.path.join(home, "PUBLIC_DROP.txt") if home else ""
+    if not f or not os.path.exists(f):
+        return []
+    return [l.strip() for l in io.open(f, encoding="utf-8") if l.strip() and not l.lstrip().startswith("#")]
 RENAME = [("DECISIONS-public.md", "DECISIONS.md"),    # generated -> the name the docs link to
           ("poc/RESULTS-public.md", "poc/RESULTS.md")]  # the evidence behind the README's numbers ships too
 
@@ -162,6 +173,7 @@ def main():
 
     print("== exporting tracked tree ==")
     export(outdir)
+    DROP.extend(d for d in home_drops() if d not in DROP)
 
     for rel in DROP:
         p = os.path.join(outdir, rel)

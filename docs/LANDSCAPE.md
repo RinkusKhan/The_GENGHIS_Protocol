@@ -59,7 +59,5 @@ _Scope note (2026-09-13): health / care use cases are deliberately **not** posit
 separate product with its own backend; HEARTH is the shared household client that will
 front GENGHIS, that product, and others. GENGHIS's own second act is the general home task-fabric._
 
-## To do before going public
-- Squash the history into a fresh public repo (D22 — the current history contains real IPs/MACs).
-- README: thesis + second act + this table's one-line answer, above the fold.
+## Still open
 - Read Prima.cpp's paper against `plan_v3` and note where we differ (and where they're right).

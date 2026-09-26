@@ -60,9 +60,16 @@ EXEMPT='^(STATUS\.md|DECISIONS\.md|Project\.md|poc/RESULTS\.md|poc/coordinator-n
 # check. Add a file here only when the shape rules genuinely cannot tell its regexes from a leak.
 SHAPES_ONLY_EXEMPT='^(poc/dev-tools/leak-audit\.sh)$'
 
+# Journal-only files named in your private home ($GENGHIS_HOME/PUBLIC_DROP.txt): make-public-tree.py drops them, so
+# they are exempt here too. The list lives in the home so this shipping script does not carry their names.
+DROPS="${GENGHIS_HOME:-$HOME/genghis-home}/PUBLIC_DROP.txt"
+DROPPED=""
+[ -f "$DROPS" ] && DROPPED=$(grep -v '^[[:space:]]*#' "$DROPS" | grep -v '^[[:space:]]*$' | tr -d '\r')
+
 hits=0
 while IFS= read -r f; do
   [[ "$f" =~ $EXEMPT ]] && continue
+  if [ -n "$DROPPED" ] && printf '%s\n' "$DROPPED" | grep -qxF -- "$f"; then continue; fi
   case "$f" in *.png|*.jpg|*.jpeg|*.svg|*.gguf|*.ico|*.woff*|*.ttf) continue;; esac
   if [[ "$f" =~ $SHAPES_ONLY_EXEMPT ]]; then
     [ -z "${extra:-}" ] && continue                 # no private word list -> nothing to check here

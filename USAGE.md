@@ -307,11 +307,11 @@ py genghis_coordinator.py view          # the Operator View TUI (colored live fa
 ---
 
 ## HEARTH — the TV surface
-Requires the coordinator's `serve` running (it is, if the Pi is on). The TV app polls it.
+Requires the authority's `serve` running (it is, if the authority is on). The TV app polls it.
 
 - **Leave a message on the TV** — edit the presence message on the coordinator:
   ```bash
-  ssh <you>@<AUTHORITY> "cat > ~/genghis/hearth_message.txt" <<'MSG'
+  ssh <you>@<AUTHORITY> "cat > ~/genghis-src/poc/hearth_message.txt" <<'MSG'
   # a headline
   the body of the message the TV will show, in firelight.
   MSG
@@ -326,7 +326,7 @@ Requires the coordinator's `serve` running (it is, if the Pi is on). The TV app 
   = Not great
   ```
   They answer on the TV with **UP/DOWN + OK** (misfire-forgiving: it debounces, and "you can still change it").
-- **Review the answers over time** (the healthcare record):
+- **Review the answers over time** (the check-in record):
   ```bash
   py genghis_coordinator.py checkins      # dated question → answer, newest first
   ```
@@ -356,7 +356,7 @@ Includes a toggleable **"donor down"** alert. See [`monitoring/README.md`](monit
 Look at any Control Room header: **verified HH:MM · 7/7 nodes** — an independent pass on the authority every 15 minutes.
 A ⚠ means two passes were missed (the authority itself is down). The history is one line per pass:
 ```bash
-tail -20 ~/genghis/watchdog.log        # on the authority
+tail -20 ~/genghis-src/poc/watchdog.log        # on the authority
 ```
 
 ## Keep it healthy
@@ -364,6 +364,8 @@ tail -20 ~/genghis/watchdog.log        # on the authority
   via `@reboot` cron). After a power-cut, just wait ~a minute and `curl http://<AUTHORITY>:8899/fabric`.
   On a **Windows** `serve` node (the fast 5090 path), [`poc/serve-laptop.ps1`](poc/serve-laptop.ps1) + a
   per-user **Startup** launcher does the same — crash-restart loop + auto-start at logon, no admin needed.
+  A **Windows CPU donor** starts at boot as a scheduled task (no login needed); a Windows GPU donor starts at logon.
+  `verify` has an `at boot` check for both.
 - **Restart the coordinator** (rarely needed): `ssh <AUTHORITY> "pkill -f 'genghis_coordinator[.]py serve'"` — the
   loop respawns it. The `[.]` matters: a plain `genghis_coordinator.py serve` pattern also matches the SSH shell running
   the command and kills your own session; `[.]` still matches the serve but can never match its own command line.

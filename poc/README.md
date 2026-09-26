@@ -2,7 +2,7 @@
 
 Goal: prove the **memory-pooling-via-layer-sharding** thesis on the real fleet — run one model split across the laptop + LAN donors, streaming activations over the RPC pipeline. This is the "muscle" the GENGHIS coordinator will later plan and heal.
 
-> **This doc is the substrate proof (the raw llama.cpp RPC layer).** The **coordinator now exists and is mature** — `genghis_coordinator.py` plans/heals/serves the fleet, hosts the **model repository**, a **web admin**, **mDNS discovery**, **auth**, and **`/metrics`**. For day-to-day use start with **[INSTALL.md](../INSTALL.md)** + **[USAGE.md](../USAGE.md)**; full reference in **[docs/COMMANDS.md](../docs/COMMANDS.md)**. The donor-setup steps below are still exactly how you bring a donor online.
+> **This doc is the substrate proof (the raw llama.cpp RPC layer).** The **coordinator now exists and is mature** — `genghis_coordinator.py` plans/heals/serves the fleet, hosts the **model repository**, a **web admin**, **mDNS discovery**, **auth**, and **`/metrics`**. For day-to-day use start with **[INSTALL.md](../INSTALL.md)** + **[USAGE.md](../USAGE.md)**; full reference in **[docs/COMMANDS.md](../docs/COMMANDS.md)**. The installers in [`install/`](../install/) now run the donor-setup steps below for you (and register the box, and end with `verify`); this page is how they work underneath.
 
 ## Architecture of the POC
 ```
@@ -10,7 +10,7 @@ Goal: prove the **memory-pooling-via-layer-sharding** thesis on the real fleet �
    llama-cli / server              rpc-server                 rpc-server
    holds tokenizer + sampling      holds a layer range        holds a layer range
 ```
-The client partitions the model's layers across the RPC donors automatically (by their reported free memory). No coordinator yet — that's Phase 2. Here we just confirm the transport works on *this* hardware.
+The client partitions the model's layers across the RPC donors automatically (by their reported free memory). This page is the pre-coordinator proof (Phase 1): it confirms the transport works on *this* hardware. The coordinator (Phase 2) now does the planning.
 
 ## Roles for the POC
 - **Client / orchestrator:** the Windows laptop. Runs `llama-cli` (built here, RPC on).
@@ -42,14 +42,15 @@ It installs the toolchain, builds `rpc-server` with the RPC backend, prints the 
 > Pi 3 B / weak nodes: it builds but is slow — hold it out of the first run, add it later to see the coordinator's value (it's exactly the node a smart partitioner should starve).
 
 ### 2b. GPU donor setup (NVIDIA box — run `donor-setup-cuda.sh` instead)
-For an NVIDIA GPU donor (the fleet's remote GPU is the **RTX 5060 Ti (Blackwell) on Ubuntu 26.04**; the GTX 1080 Ti was retired — D4. Note: the laptop's own **RTX 5090 is the *compute anchor*** — see the coordinator, [D9](../DECISIONS.md); this script is for the *remote* GPU donors), use the CUDA
+For an NVIDIA GPU donor (the reference fleet's is an **RTX 5060 Ti (Blackwell)** — once its own Ubuntu box, now in a Thunderbolt enclosure on the NUC, D46; the GTX 1080 Ti was retired — D4. Note: the laptop's own **RTX 5090 is the *compute anchor*** — see the coordinator, [D9](../DECISIONS.md); this script is for the *remote* GPU donors), use the CUDA
 script — it builds llama.cpp with `-DGGML_CUDA=ON -DGGML_RPC=ON` so the shard runs **on the GPU**:
 ```bash
 chmod +x donor-setup-cuda.sh
 ./donor-setup-cuda.sh
 ```
-It installs the NVIDIA driver + CUDA toolkit if missing, checks out the pinned commit, builds
-for the GPU's compute arch (`CUDA_ARCH=61` for Pascal/1080 Ti; override for other GPUs), and
+It installs the NVIDIA driver if missing (then asks for a reboot), checks for CUDA 13.2+ (printing NVIDIA's install commands if it is missing),
+checks out the pinned commit, builds for the GPU's compute arch (read from `nvidia-smi`; set `CUDA_ARCH` only to
+override), and
 serves `ggml-rpc-server -H 0.0.0.0 -p 50052 -c`. It prints a `GPU DONOR READY` block with
 **`vram_MB`** — the capacity the planner uses for this donor (VRAM, not system RAM).
 
@@ -58,9 +59,11 @@ serves `ggml-rpc-server -H 0.0.0.0 -p 50052 -c`. It prints a `GPU DONOR READY` b
 - **A GPU dwarfs the CPU donors** — the smart partitioner loads it heavily and starves the Pis.
   GPU-loaded-vs-naive is a headline demo (and at scale, benching the weak Tegra made a 70B run 3.25× —
   Run #10). The remote GPU here is the RTX 5060 Ti; the *local* 5090 anchors first (`build-cuda`, D9).
-- Other GPUs: set `CUDA_ARCH` (Blackwell 120, Ada 89, Ampere 86, Turing 75). Tegra X1 is a *different,
-  harder* path (JetPack/CUDA 10.2, CC 5.3) — do the mainstream GPU first.
-- **⚠️ Driver/OS for older GPUs (Pascal / GTX 10-series):** use **Ubuntu 24.04 LTS** with the
+- Supported cards: **RTX 20 / GTX 16-series (Turing) and newer**, on CUDA 13.2+ from NVIDIA (D52); the script
+  refuses older cards unless `GENGHIS_ALLOW_OLD_GPU=1`. Architectures: Blackwell 120, Ada 89, Ampere 86, Turing 75.
+  Tegra X1 is a *different, harder* path (JetPack/CUDA 10.2, CC 5.3) — do the mainstream GPU first. The full card →
+  driver → toolkit table is [`docs/agents/gpus.md`](../docs/agents/gpus.md).
+- **⚠️ GTX 10-series (Pascal) is experimental:** use **Ubuntu 24.04 LTS** with the
   **535/550** driver + CUDA 12.x. NVIDIA driver **580 dropped Pascal CUDA**, and Ubuntu 25.10/26.04
   ship *only* 580 — there, `nvidia-smi` shows the card but `cudaGetDeviceCount` fails with error 802.
   The script's CUDA preflight will catch this and refuse to serve rather than silently run on CPU.
@@ -94,7 +97,7 @@ coordinator is the supported path.)*
 - **Version mismatch:** client and every donor must be built from the **same llama.cpp commit** (RPC has no cross-version compatibility guarantee). Re-pull and rebuild if in doubt.
 - **Slow / stalls:** a weak node holding too many layers throttles the pipeline. Exactly the problem Phase 2 (the GENGHIS coordinator) solves.
 
-## Next (Phase 2)
-Once 2+ donors run: build the coordinator — probe each donor's `{ram, cores, arch, link latency}`,
-compute a throughput-weighted layer assignment, and emit the `--rpc` topology automatically
-instead of hand-listing hosts.
+## Phase 2 — built
+The coordinator now probes each donor's `{ram, cores, arch, link latency}`, computes a throughput-weighted layer
+assignment, and emits the `--rpc` topology automatically instead of hand-listing hosts: see
+[docs/COMMANDS.md](../docs/COMMANDS.md) and [USAGE.md](../USAGE.md).

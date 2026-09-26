@@ -47,8 +47,13 @@ matching if the network flips to Public. Logs: `poc\serve.log` (coordinator), `p
 (the warm model server) — all UTF-8, readable with `Get-Content -Tail 40`.
 
 **Dual-role (D27):** `-Serve -Donor` on one box makes its GPU the *local anchor* for its own runs **and** an RPC donor
-for every other node. Register it on the coordinator with `local:true`, its `device` (`Vulkan0`/`CUDA0`) **and** its
-`ip`/`port` — the endpoint is what lets other hosts use it.
+for every other node. The installer registers it with the authority (its device and its port) once the donor listens,
+and the launcher re-registers on every start — nothing to add by hand.
+
+**A donor that lends for real:** `-Donor` builds `ggml-rpc-server`, starts it, checks the port, offers the firewall rule
+for `50052` (every network profile, **local subnet only** — a fresh network is *Public*), and registers the port. A CPU
+donor starts at boot as a scheduled task (no login needed); a GPU donor starts at logon. If any step fails it stops and
+says why rather than ending "FINISHED".
 
 ## Linux
 ```bash
@@ -58,7 +63,10 @@ install/install-linux.sh --role coordinator                   # the always-on au
 ```
 It preflights python3 / git / build tools / the accelerator, offers `apt` installs, then hands the donor
 build to the pinned `donor-setup-*.sh` (reboot-proof + self-report wired in), or for a coordinator runs
-`genghis init` + starts `serve` with a `@reboot` cron. `--preflight` checks without changing anything;
+`genghis init`, starts `serve` with a `@reboot` cron and adds the 15-minute watchdog. A donor needs
+`--coord <authority-ip>` to register; `--serve` also makes it a host (only if you want that box to answer on its own).
+If `ufw` or `firewalld` is active it opens the donor port (`50052`) to this network only, and says so when no firewall
+is on. `--preflight` checks without changing anything and lists everything the real run would change;
 `--yes` accepts apt installs (run without a terminal, the installer can't ask, so it answers **no** and says so:
 re-run with `--yes` once the person agrees); `--name NAME` sets the box's name in the fleet (default: its hostname).
 
@@ -74,6 +82,8 @@ exempt (`/dev/nvidia*` is world-rw).
   workload / NVIDIA driver) are detected and explained, not assumed.
 - **The pinned llama.cpp commit is load-bearing** — every inference node must build the *same* one (RPC has
   zero cross-version tolerance). The installers check out the pin for you.
-- **Status:** the Windows preflight/detection is verified on real hardware; the build + Linux paths are
-  field-tested on setup and should be run on a fresh box to shake out environment specifics (per D18's
-  guided-remediation ethos, they report and guide rather than assume).
+- **Both end with `verify`** and exit with its result: the install is finished when it passes.
+- **Status:** both installers have been run end-to-end on clean machines by fresh AI agents with only this repo and
+  [`AGENTS.md`](../AGENTS.md): a Windows 11 Home VM and an Ubuntu Server VM each became a donor and passed `verify`
+  (29/29 layers on the new node). They are also the installers the reference fleet's own boxes run. A machine unlike
+  those may still surface something new; they report and guide rather than assume (D18).

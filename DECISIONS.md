@@ -1170,7 +1170,7 @@ the coordinator's REPORTABLE and the live result is banked in `fleet.json`.
 retail **UN50CU7000** **cannot obtain the microphone by any route — audio or text.** So the Fold's **ears do not
 live on the TV**: they go on any device that shares its mic with apps (a **laptop / phone / small Pi node**, or a
 **Bluetooth earbud** paired to one), feeding **PersonaPlex** (real-time full-duplex speech-to-speech on the 5090,
-measured **snappy**). The **TV remains the FACE** (HEARTH) and can be the **MOUTH** (speakers). [[project-the-fold-voice]]
+measured **snappy**). The **TV remains the FACE** (HEARTH) and can be the **MOUTH** (speakers).
 
 **The maze, banked so nobody re-runs it:** native `Tizen.Multimedia.AudioCapture` opens + streams but returns
 **pure silence** (all-zero PCM), under every stream policy (default / VoiceRecognition / Voip). The BT earbud's
@@ -1605,4 +1605,4 @@ headroom keeps it from ever bottlenecking. See charter "coordinator's three pill
     Revisit after the 1080 Ti and Phase 2. Captured in README "What can be a donor?".
 
 ---
-_Generated from the project's private decision log on 2026-09-23._
+_Generated from the project's private decision log on 2026-09-25._

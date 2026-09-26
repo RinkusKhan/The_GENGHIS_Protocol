@@ -33,7 +33,7 @@ The winning idea isn't pooling a fungible quantity of "processing." It's pooling
 ```mermaid
 flowchart LR
     U(["User prompt"]) --> TOK
-    subgraph C["🖥️ Client / Orchestrator — laptop"]
+    subgraph C["🖥️ Host — e.g. the laptop you sit at"]
         direction TB
         TOK["Tokenizer + embeddings"]
         SMP["Sampler → tokens out"]
@@ -69,7 +69,7 @@ GENGHIS stands on a proven transport (**[llama.cpp](https://github.com/ggml-org/
 sequenceDiagram
     autonumber
     actor U as User
-    participant C as Client / Orchestrator
+    participant C as Host
     participant K as Coordinator
     participant D as Donor pipeline
 
@@ -98,7 +98,7 @@ sequenceDiagram
 |---|---|
 | Client build (llama.cpp + RPC) | ✅ |
 | Runs #1–2 — single- + two-donor pipeline split, naive baseline captured | ✅ |
-| GPU donor — **RTX 5060 Ti (Blackwell)** *(GTX 1080 Ti retired — D4)* | ✅ |
+| GPU donor — **RTX 5060 Ti (Blackwell)** *(GTX 1080 Ti retired from the fleet — D4; GTX 10-series support is experimental — D52)* | ✅ |
 | **Phase 2 — the v0.3 coordinator** (capability-aware plan, leave-one-out prune, precise KV from GGUF, self-tuning throughput) | ✅ |
 | Self-healing (heartbeat · heal-by-membership · **settle-&-retry** on a transient shortfall) | ✅ |
 | **Won't-fit demos** — a 32B (Run #7, 3.5×) then a **70B across the whole fleet** (Run #9) | ✅ |
@@ -125,6 +125,7 @@ sequenceDiagram
 | **`verify` + [`AGENTS.md`](AGENTS.md)** — every install ends with a read-only check (registered, pinned build, GPU really lent, wired link, PDFs readable) and the addresses to bookmark; an AI agent can install by the rules and prove it's done | ✅ |
 | **A measured record (D51)** — the authority re-measures every node every minute, and a donor's memory comes from its own device (Vulkan GPUs no longer start at zero capacity) | ✅ |
 | **Attached documents** — a PDF or text file attached to a chat is read by GENGHIS; an attachment never fails the request | ✅ |
+| **Installers tested by strangers** — fresh AI agents with only this repo and [`AGENTS.md`](AGENTS.md) installed a donor on a clean Windows 11 Home box and a clean Ubuntu box; both passed `verify` (29/29 layers on the new node) | ✅ |
 
 **The keystone finding:** adding a weak donor via naive memory-split made generation *slower* (7.8 → 3.3 tok/s) — exactly the problem a capability-aware coordinator exists to solve. Confirmed again at scale (Run #10: benching the weak Tegra made a 70B run **3.25× faster**). See [`poc/RESULTS.md`](poc/RESULTS.md).
 
@@ -228,10 +229,10 @@ Put your `.gguf` files in `poc/models/` — that is the fleet's library.
 
 **2 · Every other box:**
 ```bash
-bash install/install-linux.sh --role donor --accel cpu|cuda|vulkan --coord <authority-ip>   # Linux / Pi / DGX Spark
+bash install/install-linux.sh --role donor --accel cpu|cuda|vulkan --coord <authority-ip>   # Linux / Raspberry Pi
 ```
 ```powershell
-powershell -ExecutionPolicy Bypass -File install\install-windows.ps1 -Serve -Donor -Coord <authority-ip>   # Windows (CUDA or Vulkan auto-detected)
+powershell -ExecutionPolicy Bypass -File install\install-windows.ps1 -Donor -Coord <authority-ip>   # Windows (CUDA or Vulkan auto-detected); add -Serve on a box you sit at
 ```
 Each installer **preflights, guides what it can't automate, builds llama.cpp at the pinned commit, registers the
 box with the authority, and makes it reboot-proof**. Then it **runs `verify`**: a read-only check that the box is
@@ -286,4 +287,4 @@ self-healing. Full guides: [`INSTALL.md`](INSTALL.md) · [`USAGE.md`](USAGE.md) 
 
 Licensed under the **[Apache License 2.0](LICENSE)** — permissive, with an explicit patent grant. See [`NOTICE`](NOTICE). "GENGHIS" and "The GENGHIS Protocol" are reserved names of the project; the license covers the code, not the name.
 
-© 2026 Michael B. Rinkus. Builds on [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT), invoked over RPC.
+© 2026 Michael B. Rinkus. Built with **Subutai**, his AI engineering partner. Builds on [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT), invoked over RPC.

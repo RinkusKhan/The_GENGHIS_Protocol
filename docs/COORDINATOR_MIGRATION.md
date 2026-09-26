@@ -8,6 +8,9 @@ replacing a *donor* is one click (D26); replacing the coordinator is this page. 
 > `serve` becomes an inference host of it the moment its `GENGHIS_COORD` points there (no rival `fleet.json`).
 
 ## 0 · What actually moves
+_Paths below are the manual layout the Pi used (`~/genghis/`). On a box set up by the installer they live in
+`~/genghis-src/poc/` instead: same file names._
+
 | Thing | Where it lives on the OLD authority | Size |
 |---|---|---|
 | `fleet.json` | `~/genghis/fleet.json` | KB |
@@ -57,7 +60,7 @@ t = tempfile.NamedTemporaryFile("w", dir=os.path.dirname(p), delete=False); json
 print("coordinator ->", f["coordinator"]["host"], ip)
 EOF
 ```
-Start `serve` again (the installer's launcher: `systemctl --user start genghis-serve`, or `~/genghis/serve.sh`).
+Start `serve` again (`setsid bash ~/genghis-src/poc/serve.sh >/dev/null 2>&1 < /dev/null &`, or `~/genghis/serve.sh` in the manual layout; the installer's `@reboot` cron starts it at every boot).
 Check: the Control Room on the new box now shows the **whole fleet**, `GET /models` lists the library.
 
 ## 3 · Repoint everything that named the old box

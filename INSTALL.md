@@ -4,12 +4,13 @@ Set up a GENGHIS fleet on your own hardware. It has four kinds of node — insta
 
 | Role | What it is | Where |
 |---|---|---|
-| **Client** | where you launch models (holds the model file + `llama-cli`) | your main PC (Windows / Linux / macOS) |
-| **Coordinator** | the always-on **authority** — the fleet's source of truth + model repo + HEARTH backend | a Raspberry Pi, or any always-on Linux box |
-| **Donor** | lends CPU / GPU / RAM to a run (`ggml-rpc-server`) | any Linux box, Pi, NVIDIA box, or Mac |
-| **TV (HEARTH)** | the optional household surface | a Samsung Tizen TV — see [`docs/TV_CLIENT_INSTALL.md`](docs/TV_CLIENT_INSTALL.md) |
+| **Authority** (the coordinator) | the always-on source of truth — fleet + config + model library + mDNS + watchdog (+ the HEARTH backend) | your most reliable always-on box: a mini-PC, a server, a Raspberry Pi |
+| **Host** | a front door: runs `serve` (`/v1`, warm models, a Control Room) on its own GPU | the authority, plus any box you sit at (Windows / Linux) |
+| **Donor** | lends CPU / GPU / RAM to a run (`ggml-rpc-server`) | any Linux box, Raspberry Pi, Jetson, NVIDIA or Intel Arc box, or Windows PC |
+| **Surface** (TV / HEARTH) | the optional household display | a Samsung Tizen TV — see [`docs/TV_CLIENT_INSTALL.md`](docs/TV_CLIENT_INSTALL.md) |
 
-One machine can hold several roles (the reference fleet's authority, an Intel NUC, is coordinator **and** a donor of two GPUs; the laptop is client **and** the anchor GPU donor).
+One machine can hold several roles (the reference fleet's authority, an Intel NUC, is authority, host **and** a donor of two GPUs; the laptop is a host **and** lends its GPU). Where this guide says **client** (a box you launch models from), read *host*.
+Macs are designed-for but not yet measured (§4b).
 
 ---
 
@@ -46,7 +47,7 @@ Details + what each installer checks: [`install/README.md`](install/README.md). 
 
 ---
 
-## 1 · Coordinator (a Raspberry Pi, or any always-on Linux box)
+## 1 · Coordinator (the authority: a mini-PC, a server, a Raspberry Pi — any always-on Linux box)
 
 The brain: the authority + model repo + HEARTH backend. It does **not** need a GPU.
 
@@ -83,28 +84,21 @@ python3 genghis_coordinator.py discover   # prints the coordinator URL it found
 ```
 Planning commands auto-discover when the default/configured coordinator is unreachable. To pin one instead,
 set `GENGHIS_COORD=<host>` (or the full `GENGHIS_FLEET_URL`).
-**Manage it from a browser:** open **`http://<AUTHORITY_IP>:8899/`** — the **web admin** page: give nodes friendly
-names, set roles, and choose the default run-type. Changes save to the coordinator (`config.json`) and take
-effect everywhere the fabric shows (including the TV).
+**Manage it from a browser:** open **`http://<AUTHORITY_IP>:8899/`** — the **Control Room** (the fleet, which model
+each speed setting runs, what is warm where). The original **web admin** (friendly names, roles, default run-type, PIN)
+is at **`/admin`**. Changes save to the authority (`config.json`) and take effect everywhere the fabric shows
+(including the TV).
 
-> **Where do models go?** In ONE folder on the machine you launch from — see **[Models: the one-folder
-> rule](docs/MODELS.md)**. You do **not** stage anything here to run models; the section below is an
-> *advanced, optional* convenience only for people with **several** launch machines.
-
-<details>
-<summary><b>Advanced (optional): share models across MULTIPLE launch machines</b></summary>
-
-If you run models from more than one computer, the coordinator can act as a shared **model store** so you
-don't copy a big GGUF to each. Stage GGUFs in `~/genghis/models/` on the coordinator and it serves them at
-`/models`; another launch machine can then use a **bare model name** and GENGHIS **fetches-if-missing** (no
-re-downloading 40 GB per machine). This is a manual, opt-in step — nothing is pushed automatically.
+> **Where do models go?** Into the authority's models folder (the `models/` folder next to the coordinator — here
+> `~/genghis/models/`; with the installer, `~/genghis-src/poc/models/`). That folder is the fleet's **model library**,
+> served at `/models`. Every host runs a model by bare name and **fetches it if missing** (resumable), and a host's
+> `serve` pre-fetches its speed settings' models when it starts. Donors never need the file. More:
+> **[Models: the one-folder rule](docs/MODELS.md)**.
 ```bash
-scp your-model.gguf <USER>@<AUTHORITY_IP>:~/genghis/models/     # stage a model on the coordinator store
-python3 genghis_coordinator.py models                       # list the store + local cache
-python3 genghis_coordinator.py models pull your-model.gguf  # pull one into this machine's cache
+scp your-model.gguf <USER>@<AUTHORITY_IP>:~/genghis/models/     # stage a model in the library
+python3 genghis_coordinator.py models                       # list the library + this box's local cache
+python3 genghis_coordinator.py models pull your-model.gguf  # pull one into this box's cache ahead of time
 ```
-Full detail: **HEARTH `deploy/pi/README.md`** *(coming soon)*.
-</details>
 
 ---
 
@@ -137,7 +131,7 @@ nohup ~/genghis/donor-report.sh <node-id> >> ~/genghis/report.log 2>&1 &   # sta
 
 Same as §2 but with the CUDA script — the shard runs **on the GPU**:
 ```bash
-./donor-setup-cuda.sh           # installs driver/CUDA if missing, builds -DGGML_CUDA=ON at the pinned commit
+./donor-setup-cuda.sh           # installs the driver if missing, checks CUDA 13.2+, builds -DGGML_CUDA=ON at the pinned commit
 # then the SAME donor-serve.sh + donor-report.sh crons as §2 (report picks up VRAM via nvidia-smi)
 ```
 The card's architecture is read from the driver (`nvidia-smi` compute capability 12.0 → `CUDA_ARCH=120`); set
@@ -145,7 +139,7 @@ The card's architecture is read from the driver (`nvidia-smi` compute capability
 > **Supported cards: RTX 20 / GTX 16-series (Turing) and newer (D52); GTX 10-series is experimental**, all on **CUDA 13.2 or newer from NVIDIA's repository**;
 > the script refuses older cards (`GENGHIS_ALLOW_OLD_GPU=1` to try anyway) and, if CUDA 13.2+ is missing, stops and
 > prints NVIDIA's install commands. With 13.2 no GCC-14 host compiler or glibc patch is needed. (Older notes: Pascal (GTX
-> 10-series) needs Ubuntu 24.04 + driver ≤570 (see [`DECISIONS.md`](DECISIONS.md) D4).
+> 10-series) needs Ubuntu 24.04 + driver ≤570 — see [`DECISIONS.md`](DECISIONS.md) D4 and [`docs/agents/gpus.md`](docs/agents/gpus.md).)
 > **CUDA 13.0 vs glibc 2.43** (Ubuntu 26.04): `nvcc` fails on `rsqrt`/`rsqrtf` exception specs before it compiles
 > anything of ours. Install **13.2 or newer** from NVIDIA's repo (`cuda-keyring` for `ubuntu2404`, then
 > `cuda-toolkit-13-2`); Ubuntu's own `nvidia-cuda-toolkit` is 12.4 and too old for a 50-series card anyway.
@@ -175,7 +169,7 @@ Three things that will bite you, all learned the hard way:
 
 ---
 
-## 4 · Client (Windows — the machine you run models from)
+## 4 · Host by hand (Windows — the machine you run models from)
 
 **Prereqs:** `git`, CMake, a C++ toolchain (MSVC/VS Build Tools); optional NVIDIA CUDA toolkit to use a
 **local GPU as the anchor**. **Steps:**
@@ -203,10 +197,10 @@ as anchor, run `serve` on this box — and use the Windows reboot-survival launc
 (the analogue of the Pi's `@reboot` cron):
 ```powershell
 # start it now
-Start-Process -WindowStyle Hidden powershell -ArgumentList '-ExecutionPolicy','Bypass','-File','E:\The_GENGHIS_Protocol\poc\serve-laptop.ps1'
+Start-Process -WindowStyle Hidden powershell -ArgumentList '-ExecutionPolicy','Bypass','-File','<repo>\poc\serve-laptop.ps1'
 # auto-start at every logon (NO admin): a hidden launcher in the per-user Startup folder
 $s = [Environment]::GetFolderPath('Startup')
-Set-Content (Join-Path $s 'GENGHIS-serve.vbs') 'CreateObject("WScript.Shell").Run "powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File ""E:\The_GENGHIS_Protocol\poc\serve-laptop.ps1""", 0, False' -Encoding ASCII
+Set-Content (Join-Path $s 'GENGHIS-serve.vbs') 'CreateObject("WScript.Shell").Run "powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File ""<repo>\poc\serve-laptop.ps1""", 0, False' -Encoding ASCII
 ```
 **Reachability:** open TCP `8899` for *all* profiles (see Troubleshooting — the auto-created per-app rule is Private-only). If you
 just ran the installer with `-Coord`, start serve from a **new** window so the `GENGHIS_COORD` user variable is visible.

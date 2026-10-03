@@ -1,4 +1,4 @@
-# GENGHIS POC — client/orchestrator launcher (Windows laptop).
+# GENGHIS POC -- client/orchestrator launcher (Windows laptop).
 # Splits ONE model across the RPC donors listed in $Donors and runs inference.
 #
 # Usage:
@@ -19,13 +19,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 $cli = "E:\The_GENGHIS_Protocol\poc\llama.cpp\build-rpc\bin\Release\llama-cli.exe"
-if (-not (Test-Path $cli)) { throw "llama-cli not found at $cli — build may still be running." }
+if (-not (Test-Path $cli)) { throw "llama-cli not found at $cli -- build may still be running." }
 if (-not (Test-Path $Model)) { throw "Model not found: $Model" }
 
 $rpc = ($Donors -join ",")
 # Each --rpc endpoint is exposed as a device named RPC0, RPC1, ... in listed order.
 $rpcDevices = 0..($Donors.Count - 1) | ForEach-Object { "RPC$_" }
-# GOTCHA: '--device none' does NOT mean "RPC only" — it excludes RPC too and falls back to
+# GOTCHA: '--device none' does NOT mean "RPC only" -- it excludes RPC too and falls back to
 # the laptop CPU. To force compute onto donors you must NAME the RPC devices explicitly.
 $deviceList = if ($IncludeLaptop) { ($rpcDevices + "CPU") -join "," } else { $rpcDevices -join "," }
 

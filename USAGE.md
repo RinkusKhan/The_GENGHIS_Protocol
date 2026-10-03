@@ -102,12 +102,51 @@ cache (`-c`, every GENGHIS launcher does) keeps the weights, and the next call l
 18.2 t/s prompt · 113 s wall · laptop-5090* — and the same row lands in `runs.jsonl` (`strategy: v1_stream`). If it says
 *working (N s)* with no byte count, the authority is not Linux (no `ss`) — it is still loading, just blind.
 
+## Point a coding agent at your fleet (Aider)
+Any coding agent that speaks the OpenAI API can use GENGHIS as its model: the work goes on with no cloud account and
+no usage limit. Tested with [Aider](https://aider.chat) (Apache-2.0), which edits files through plain-text
+search/replace blocks and so needs no tool calling, the thing small local models are worst at.
+
+`~/.aider.conf.yml`:
+```yaml
+openai-api-base: http://<host>:8899/v1        # the host that holds the model on its OWN card (see below)
+openai-api-key: genghis                       # any value; GENGHIS does not check it unless you locked it down
+model: openai/Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf
+edit-format: diff
+analytics-disable: true
+```
+Tell Aider the context it may use in `~/.aider.model.metadata.json` (for example 16384 in, 4096 out), then work as usual:
+`aider <files> --message-file task.md --auto-test --test-cmd "<your build>"` edits, builds, reads the errors and fixes them.
+
+**Measured (one C++ project, two planted compile errors, the project's own CMake/MSVC build as the test):**
+Qwen3-Coder-30B-A3B (a mixture-of-experts model, ~17.7 GB at Q4) on one 24 GB GPU fixed both in one pass, 47 s, build
+green, the result identical to the original code; Qwen2.5-Coder-14B fixed one of the two. A 24.6k-token prompt: ~14 s to
+the first token, then ~43 tokens/s on that GPU. Give it small, precise tasks: a vague one gets a confident wrong edit.
+
+**Point it at the host with the fastest card for the model.** Today a host runs any model that fits its own card there,
+even when another host holds it on a far faster one: the same 30B prompt took 763 s to the first token on an Intel Arc
+iGPU. Until the planner hands such a request over (planned), aim the agent at the host whose card you want.
+
 ## Say what you want done — roles (D48–D50)
-> **Early — what to expect today.** A role is good instructions on a well-chosen model. It *acts* (searches, drives a
-> program) only through tools switched on in your home folder, which for now means editing a file there. Working: the
-> Researcher's web search and reading, the Blender role (while Blender is open, with its add-on server started), pictures
-> read by vision models. In progress: a Coder that edits and builds your code, and setting a role up from the chat. If a
-> role can't do what you asked, the Thinking panel says what is missing (the ⚠ lines).
+> **Experimental — what to expect today.** Roles sit on top of the proven core (pooling, placement, the `/v1` API), and
+> small local models still often fail at driving tools: a wrong call, or a claim that something was done when it was not.
+> Check what a role did. A role is good instructions on a well-chosen model. Working: **the Coder and the
+> Researcher work on files you give them in the chat** (below), the Researcher's web search and reading, the Blender role
+> (while Blender is open, with its add-on server started), pictures read by vision models. In progress: a Coder that edits
+> and builds your real projects on your drives, and setting that up from the chat. If a role can't do what you asked, the
+> Thinking panel says what is missing (the ⚠ lines).
+
+**Give a role your files — the Files panel.** Pick `genghis-coder` or `genghis-researcher`; its **Code Interpreter** is on
+by default (the `>_` switch under the message box). Drop files into the chat's **Files** panel (right-hand side) and ask:
+*"unzip the archive and list what's inside"*, *"chart column B of this CSV"*. The model writes Python, **your browser runs
+it** on those files, and anything it writes back appears in the Files panel for you to download. Things to know:
+- The files and the Python live **in your browser**, not on the fleet: nothing touches your drives. The Files panel is kept
+  in the browser's storage for this site, so it is still there next time (on this browser) until you delete it.
+- Packages the code imports (Pillow, numpy, pandas, scipy, matplotlib, scikit-image, OpenCV) are loaded for it
+  automatically, and if the code fails the error is shown to the model, so it fixes the code instead of guessing.
+  `.zip` / `.tar` / `.gz` open; a `.7z` or `.rar` can't (the model says so and asks for a `.zip`).
+- It runs on the browser's memory: fine for documents, tables and a few images; a batch of hundreds of large images can be
+  too much, and the model should say so rather than pretend.
 
 Besides the speed settings, the model list shows **roles**: `genghis-researcher`, `genghis-coder`, and any you add. Pick
 one like any model. A role is a way of working (its own instructions, the tools it may use, a folder of documents it

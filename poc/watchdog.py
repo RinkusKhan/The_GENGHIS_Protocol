@@ -180,7 +180,7 @@ def provision_chat_ui():
         subprocess.run(["docker", "cp", prov, "open-webui:/tmp/provision.py"], check=True, timeout=20, capture_output=True)
         subprocess.run(["docker", "cp", prompt, "open-webui:/tmp/system_prompt.txt"], check=True, timeout=20, capture_output=True)
         out = subprocess.run(["docker", "exec", "open-webui", "python3", "/tmp/provision.py", "--quiet"],
-                             capture_output=True, text=True, timeout=60)
+                             capture_output=True, text=True, timeout=300)   # a fresh container fetches ~25 MB of Pyodide packages
         if out.stdout.strip():
             print("[watchdog] chat UI provisioned: " + " | ".join(out.stdout.strip().splitlines()))
     except Exception as e:

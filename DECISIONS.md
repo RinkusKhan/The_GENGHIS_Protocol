@@ -17,6 +17,127 @@ Newest at top. See also [PROJECT_CHARTER.md](PROJECT_CHARTER.md), [README.md](RE
 
 ---
 
+## D57 — A model placed on a card is planned for THAT card (2026-10-03)
+**Context:** the maintainer: *"Can you fix Genghis so that I can put the 14B Coder back on the NUC/5060ti? It no longer works."*
+and *"I have plenty of room for it on the NUC's Intel ARC, that doesn't do it either."* Since D46 (when the 5060 Ti
+became an eGPU on the NUC), neither of the NUC's columns could take a model: "Qwen2.5-Coder-14B is too big for this host's card
+(needs ~11 GB, the authority has ~21 GB usable)". Two bugs: a warm request naming a card was planned for the whole box
+(D46 makes the same-box eGPU win on speed, so the plan went to the eGPU over loopback), and `warm_model` accepted only a
+plan on the host's own card, so it refused; and a refusal for the named card ("runs no serve of its own") was set and
+then overwritten, because the handler fell through to that whole-box warm.
+
+**Decision 1 — the card that was chosen is the card that is planned.** A warm with a `node` (a Control Room column, a
+formation step) plans over that card alone. If the model does not fit there it says so with the numbers; it is never
+silently put somewhere else.
+
+**Decision 2 — the card's name travels.** Every forwarded warm/unload keeps its `node`, so the host it reaches plans for
+that card and not wherever its own planner prefers. A card with no serve of its own (an eGPU) is sent to the host in its
+box (same address), which serves it over loopback as D46 already does for chats. A real refusal ends the request.
+
+**Decision 3 — "already warm there" is an answer, not a plan.** The card's RPC endpoint is held by that very model, so a
+fresh plan would exclude the card and report a failure.
+
+---
+
+## D56 — Home services: programs the owner starts and stops from the Control Room, and a GPU has one owner at a time (2026-09-26)
+**Context:** the maintainer: *"should we have 2 additional cards in the Control center, one that has the load/unload
+personaPlex [...] That way, you know it can't be loaded if the 5090 is occupied with a model already & the inverse as
+well."* PersonaPlex (a live speech-to-speech model, ~19.4 GB) runs in WSL on the laptop and needs nearly all of the
+5090's 24 GB, the same card GENGHIS keeps a chat model warm on and lends to pooled models over RPC. Starting it by
+hand meant a terminal command, and nothing stopped GENGHIS from placing a model on the card while it ran (or it from
+starting on top of one). An upscaler card was raised too and deliberately left for later: it is a job, not a switch.
+
+**Decision 1 — a service is one file in the home of the box that runs it (`<home>/services/<id>.json`).** `start` and
+`stop` commands, a `probe` address that answers while it runs, an `open` link, and the card's words. Like adapters
+(D49), only an id and "start"/"stop" ever cross the network; the command is whatever the running box's own file says.
+The Control Room on any host lists every host's services (each host answers `/services.json?local=1` for its own) and
+relays a click to the box that has it. Browser: admin role; another GENGHIS host: accepted as a relay. The repo carries
+the mechanism and a switched-off example; a person's services never enter it (the maintainer: *"this part [...] is just for
+our home install"*).
+
+**Decision 2 — `"gpu": true` means the card has ONE owner at a time: the node's `gpu_hold`.** While a GPU service runs,
+The authority records `gpu_hold: <service name>` on that node: the planner leaves it out (`live_donors`, even for its
+own host), hand-overs skip it, pooled shards other hosts kept there are reclaimed (as Lend off does, D44), warming a
+model onto it is refused with the reason, and the Fleet table shows HELD with "GPU in use by ...". The other direction:
+Start refuses while GENGHIS holds a model on that box and says what; the card asks, and "free it" unloads those models
+first. Lend off (D35) was not enough: it keeps a card for its owner's OWN GENGHIS work, where a service needs it empty.
+
+**Decision 3 — the record follows reality, not the clicks.** A beat (15 s) on every serve holds the card for a service
+found running that was started some other way, and gives the card back when a service stops some other way. A service
+that does not answer within `start_s` of starting says so on its card.
+
+**Decision 4 — "stopped" means the program is gone, and the stop command's exit code decides.** Found on the first real
+stop: PersonaPlex closed its port on SIGTERM and then hung in shutdown with all 19.4 GB still on the card, so "no longer
+answering" had reported success while the GPU stayed full. The stop command must not return 0 until the process has
+exited (the home file's stop escalates to SIGKILL after 8 s); a non-zero exit keeps the card held and says so.
+
+**Addendum 2026-10-01 — a service's output goes to its `"log"` file, opened by the serve.** On Windows the serve starts a
+service DETACHED (it must outlive a serve restart), and a `cmd /c ... > file` redirect inside the command then reaches
+the program as nothing: ComfyUI's card logged 0 bytes. The serve opens the file and hands it to the program as its
+stdout/stderr. Addendum 2026-10-03: keep a card's command short; a long `bash -lc "..."` with nested quotes was mangled
+on its way through Windows' command-line quoting into `wsl.exe` and bash never ran: put the steps in a script.
+
+---
+
+## D55 — Roles that act on a workstation: MCP tool servers and fenced files, each on an allow-list (2026-09-26)
+**Context:** the maintainer, after testing the roles: *"The Coder needs to be able to code, not just put examples in prompts.
+It'll need access to Visual Studio, hard drives, etc."* The Coder had no tools at all; a role could act only through
+the two adapters that existed (Blender, the web). Visual Studio already exposes ~56 tools through an MCP server on the
+laptop (build, Error List, documents, Roslyn navigation, the whole debugger), and the codebases live on the laptop's
+drives.
+
+**Decision 1 — one generic door for tool servers (`"transport": "mcp"`).** GENGHIS speaks the Model Context Protocol
+(streamable HTTP, JSON-RPC; replies as JSON or SSE; a session that is re-opened when the server forgets it) to a server
+the adapter file names by `url`, stdlib only. Every MCP server is then one small file, not new code.
+
+**Decision 2 — an MCP adapter offers only what its `allow` list names; none named, none offered.** A server's tool list is
+the server's choice; what reaches a local model is the owner's. Two reasons, both measured before: a local model shown
+dozens of tools calls them instead of answering (D37, ~30 calls for an org chart), and each tool is something a model
+can do on a desktop. This is D49's "the model picks the verb; a human wrote the sentence" in MCP form. The shipped
+Visual Studio file allows build, build status, the Error List and navigation; not document writes (files do that, with
+backups) and not the debugger.
+
+**Decision 3 — files are a built-in, fenced adapter (`"transport": "files"`).** It touches only the folders its `roots`
+name; every path is resolved to its real location before the check, so a symlink or `..` cannot leave; key and
+credential files (`.env`, `*.pem`, `id_rsa`, `.ssh/`, …) are refused whatever the roots say. Reading, listing, finding
+and searching are the default. Writing is a separate switch (`"write": true`), and even then every write keeps the
+previous version in `<root>/.genghis-backup/<time>/` and returns the unified diff, so the chat shows what changed and it
+can be put back. There is no delete, and `.git` is never written. A preview that waits for a human was considered and
+not built: a chat turn has no place for the person to click "apply" between two tool calls, and a backup plus a visible
+diff gives the same safety without pretending otherwise.
+
+**Decision 4 — web and local access belong in different roles, and GENGHIS says so when they meet.** A role that can
+both fetch pages and read files can be steered by a page it reads into putting what it read in the address of the next
+page it fetches. The adapters do not forbid the combination (it is the owner's home), but the chat warns every time.
+
+**Decision 5 — a role sets its own tool-round budget (`max_rounds`, default 6, at most 24).** A coder reads, edits,
+builds, reads the errors and edits again; six rounds is a Blender command, not a build-fix loop.
+
+**Decision 6 — the Coder's fence is a workspace the owner points, not a list the owner edits (the maintainer, same day).**
+*"Set it to D:\Coder and keep projects there, separated by project folders; when done archive it and start a different
+one"* — and *"if I had a USB in and was doing a small correction, I could switch the folder for that session to
+F:\Project."* So the files adapter has a workspace mode: one `root`, changed from the Control Room at any time (checked
+on the box that has it; recent roots are one click), and a `project` inside it (or the whole root; or a new one). The
+fence is the project alone, and backups live inside it. Some folders are never a root: a system drive's root, the OS and
+program folders, the whole user folder and its AppData, any `.ssh`, and any folder that holds GENGHIS's own home — a
+model that could write its own adapter file could widen its own fence. Visual Studio is not fenced by this (it builds
+whatever solution is open); the card says to open the solution from the workspace.
+
+**Why this order:** it makes the Coder real first (Visual Studio + the codebase), with one generic door that every later
+tool server reuses. The Researcher's analysis workspace (a sealed Python sandbox for data and charts) is the next
+step and reuses the same belt, relay and allow-list rules.
+
+**Tested:** a fake MCP server with SSE replies, sessions and pagination, which forgets its session mid-run (the client
+re-opens it and retries); a tool outside `allow` is refused; an undeclared argument is dropped; `..`, absolute paths
+and `.env` are refused; a read-only adapter offers no write tools; a write keeps a backup, preserves CRLF line endings
+and returns the diff; an ambiguous replace is refused. Not yet run against the real Visual Studio server (it was not
+open); the first run is the check.
+
+**Follow-ups:** the analysis workspace (Researcher: data, charts); a tool-driving model on one card (tools do not
+run on a split, so the Coder should answer on the laptop's 5090 or use a model that fits the NUC's 5060 Ti).
+
+---
+
 ## D54 — The Researcher looks things up itself: a built-in web adapter that reads only the public internet (2026-09-23)
 **Context:** the Researcher could only work from what it was given. Open WebUI's own web search (DuckDuckGo, now 5
 results) runs *before* the question and pastes results in; useful, but the model cannot choose what to search, follow
@@ -1605,4 +1726,4 @@ headroom keeps it from ever bottlenecking. See charter "coordinator's three pill
     Revisit after the 1080 Ti and Phase 2. Captured in README "What can be a donor?".
 
 ---
-_Generated from the project's private decision log on 2026-09-25._
+_Generated from the project's private decision log on 2026-10-03._

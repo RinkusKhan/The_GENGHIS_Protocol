@@ -1,0 +1,18 @@
+{
+  "id": "visualstudio",
+  "name": "Visual Studio",
+  "description": "Builds and reads errors in a running Visual Studio through its MCP server (VS-MCPServer extension, Tools > MCP Server > Start Server).",
+
+  "enabled": false,
+  "_comment_enabled": "OFF as shipped. Switching it on lets a model build your open solution and read its Error List.",
+
+  "transport": "mcp",
+  "url": "http://localhost:5050/",
+  "timeout": 120,
+  "_comment_timeout": "A build can take a while; a tool call waits this many seconds.",
+
+  "allow": ["build_solution", "build_status", "errors_list", "goto_definition", "find_references", "symbol_workspace"],
+  "_comment_allow": "Only these tools reach the model. The server offers ~56 (documents, editor, the whole debugger); a local model shown dozens calls them instead of answering, and each one is a thing a model can do on your desktop. Edit files through the `files` adapter instead: it keeps backups and shows the diff. `genghis_coordinator.py adapters` names any tool here the server does not have.",
+
+  "_comment_node": "Visual Studio's server listens on this machine only. Add \"node\": \"<fleet id of the PC running Visual Studio>\" when the chat is answered by another box."
+}

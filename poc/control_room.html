@@ -80,6 +80,14 @@
   .rdot{width:8px;height:8px;border-radius:50%;background:var(--faint);flex:none}
   .rdot.up{background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 20%,transparent)}
   .rdot.down{background:var(--red)}
+  .res.svc{cursor:default}
+  .res.svc:hover{transform:none}
+  .svc-where{font-family:var(--mono);font-size:11px;color:var(--faint);margin-bottom:6px}
+  .svc-act{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:4px}
+  .svc-act a.btn{display:inline-block}
+  .svc-msg{font-size:12px;color:var(--muted);line-height:1.4;margin-top:8px}
+  .svc-msg.warn{color:var(--amber)}
+  .rdot.wait{background:var(--amber)}
   .rstat{font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);position:absolute;top:15px;right:16px}
   .foot{display:flex;flex-wrap:wrap;gap:12px;margin-top:26px}
   .link{border:1px solid var(--line);border-radius:10px;background:var(--panel);box-shadow:var(--shadow);padding:12px 16px;display:flex;flex-direction:column;min-width:150px;transition:transform .12s,border-color .12s}
@@ -139,6 +147,14 @@
   .pverdict.ok{color:var(--ok)} .pverdict.no{color:var(--red)} .pverdict.warn{color:var(--amber)}
   .toggle{font-family:var(--mono);font-size:10.5px;color:var(--steel);cursor:pointer;margin-left:auto;letter-spacing:.06em;text-transform:none}
   #models-card.hidden{display:none}
+  .ws-body{padding:14px 16px;display:grid;gap:10px}
+  .ws-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .ws-row .k{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);min-width:78px}
+  .ws-row label{font-size:13px;display:inline-flex;align-items:center;gap:6px;cursor:pointer}
+  .ws input[type=text]{font-family:var(--mono);font-size:12.5px;color:var(--text);background:var(--panel-2);border:1px solid var(--line);border-radius:7px;padding:6px 9px;flex:1;min-width:180px;max-width:420px}
+  .ws input[type=text]:focus{outline:none;border-color:var(--steel)}
+  .ws .fence{font-family:var(--mono);font-size:12.5px;color:var(--ok);word-break:break-all}
+  .ws .prob{color:var(--amber);font-size:12.5px}
   .err{color:var(--red)}
   @media(max-width:620px){ .hide-sm{display:none} }
 </style></head>
@@ -193,6 +209,9 @@
     <tbody id="models"><tr><td colspan="4" class="note">loading…</td></tr></tbody>
   </table></div>
   <p class="note" id="resnote"></p>
+
+  <div class="sect-label" id="ws-label">Coder workspace · the only folder the Coder can see</div>
+  <div class="card ws" id="ws-card"><div class="ws-body" id="ws"><span class="note">loading…</span></div></div>
 
   <p class="note">Refreshes live · this page is your GENGHIS front door (bookmark it). Served by the coordinator — no Docker needed to see it.</p>
 </div>
@@ -655,7 +674,7 @@ function renderResources(){
       <span class="rd">${esc(r.desc)}</span>
       <span class="ru">${esc(r.same ? location.origin + r.same : resUrl(r))}</span>
     </a>`;
-  }).join("");
+  }).join("") + `<div id="services" style="display:contents"></div>`;   // D56: home services sit in the same grid
 }
 async function probeOne(r){
   const dot = document.getElementById("rd-"+r.id), st = document.getElementById("rs-"+r.id);
@@ -673,9 +692,147 @@ async function probeOne(r){
 }
 function probeResources(){ RES.forEach(probeOne); }
 
-(async()=>{ await whoami(); renderResources(); probeResources(); tick(); })();
+// ---- D56: home services -- programs on a fleet box its owner starts and stops here (e.g. a voice model that needs the whole
+// GPU). Defined in that box's home folder; this page only ever sends an id and start/stop.
+let SVC = [], SVC_BUSY = {}, SVC_T = null;
+async function loadServices(){
+  try{ SVC = (await fetch("/services.json",{cache:"no-store"}).then(r=>r.json())).services || []; }
+  catch(e){ SVC = []; }
+  renderServices();
+  clearTimeout(SVC_T);
+  SVC_T = setTimeout(loadServices, SVC.some(s=>s.state==="starting") || Object.keys(SVC_BUSY).length ? 3000 : 15000);
+}
+function renderServices(){
+  const box = $("#services"); if(!box) return;
+  const admin = can("admin");
+  box.innerHTML = SVC.map(s=>{
+    const key = (s.via||"") + "/" + s.id, busy = SVC_BUSY[key];
+    const st = busy ? busy.label : s.state;
+    const dot = s.state==="running" ? "up" : (s.state==="starting" || busy ? "wait" : "down");
+    const where = `on ${esc(s.node||s.via||"this host")}` + (s.gpu ? " · needs the whole GPU" : "");
+    let msg = "", warn = false;
+    if(busy && busy.msg){ msg = busy.msg; warn = !!busy.warn; }
+    else if(s.state==="running"){ msg = (s.gpu ? `${esc(s.node)} is out of the pool while it runs. ` : "") + esc(s.open_note||""); }
+    else if(s.state==="starting"){ msg = "Loading — about a minute. The card turns green when it answers."; }
+    else if(s.gpu && (s.busy||[]).length){ msg = `The GPU is holding ${esc(s.busy.join(", "))} for chats. Start frees it (asks first).`; }
+    else if(s.gpu && s.gpu_hold){ msg = `The GPU is held for ${esc(s.gpu_hold)}.`; warn = true; }
+    if(!busy && s.note && s.state!=="starting" && !/^starting/.test(s.note)) msg = (msg ? msg + " " : "") + `<span style="color:var(--faint)">Last: ${esc(s.note)}</span>`;
+    const run = s.state==="running";
+    const btn = run
+      ? `<button class="btn" data-svc="stop" data-key="${esc(key)}" ${admin&&!busy?"":"disabled"}>Stop</button>`
+      : `<button class="btn" data-svc="start" data-key="${esc(key)}" ${admin&&!busy&&s.state!=="starting"?"":"disabled"}>Start</button>`;
+    const open = s.open ? `<a class="btn" href="${esc(s.open)}" target="_blank" rel="noopener" ${run?"":'style="opacity:.5;pointer-events:none"'}>Open</a>` : "";
+    return `<div class="res svc">
+      <span class="rstat"><span class="rdot ${dot}"></span> ${esc(st)}</span>
+      <span class="glyph ${s.cls||"steel"}">${esc(s.glyph||"▶")}</span>
+      <span class="rt">${esc(s.name)}</span>
+      <span class="rd">${esc(s.desc)}</span>
+      <span class="svc-where">${where}</span>
+      <span class="svc-act">${btn}${open}${admin?"":'<span class="note" style="margin:0">starting and stopping needs the admin role</span>'}</span>
+      ${msg ? `<span class="svc-msg${warn?" warn":""}">${msg}</span>` : ""}
+    </div>`;
+  }).join("");
+  box.querySelectorAll("button[data-svc]").forEach(b=> b.onclick = ()=> svcAct(b.dataset.key, b.dataset.svc));
+}
+async function svcAct(key, action, free){
+  const s = SVC.find(x=>((x.via||"") + "/" + x.id)===key); if(!s) return;
+  SVC_BUSY[key] = {label: action==="stop" ? "stopping…" : (free ? "freeing the GPU…" : "starting…"),
+                   msg: action==="stop" ? `Stopping ${esc(s.name)}…` : (free ? `Unloading ${esc((s.busy||[]).join(", "))}, then starting ${esc(s.name)}…` : `Starting ${esc(s.name)}…`)};
+  renderServices();
+  let r;
+  try{
+    const resp = await fetch("/service",{method:"POST",headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({id:s.id, action, free:!!free, via:s.via||""})});
+    r = (resp.status===401||resp.status===403) ? {ok:false, error:"starting and stopping needs the admin role"} : await resp.json();
+  }catch(e){ r = {ok:false, error:"the coordinator did not answer"}; }
+  delete SVC_BUSY[key];
+  if(r && r.need_free){
+    const ok = confirm(`${r.error}.\n\nUnload ${(r.busy||[]).join(", ")} and start ${s.name}? Chats will use the other cards until you stop it.`);
+    if(ok) return svcAct(key, action, true);
+    SVC_BUSY[key] = {label:s.state, msg:"Not started — the GPU still holds the chat model.", warn:true};
+    setTimeout(()=>{ delete SVC_BUSY[key]; renderServices(); }, 6000);
+  } else if(!r || !r.ok){
+    SVC_BUSY[key] = {label:s.state, msg:"· " + esc((r&&r.error)||"failed"), warn:true};
+    setTimeout(()=>{ delete SVC_BUSY[key]; renderServices(); }, 10000);
+  }
+  loadServices(); tick();
+}
+
+(async()=>{ await whoami(); renderResources(); probeResources(); tick(); loadServices(); })();
 setInterval(probeResources, 15000);
 setInterval(tick, 4000);
 setInterval(whoami, 30000);
+// ---- D55: the Coder's workspace -- one root you point anywhere (D:\Coder, or F:\Project for a USB session), a current
+// project inside it, and the two switches. Saved on the box that has the folders; this page may be served by another.
+let WS = null;
+async function loadWs(force){
+  const box = $("#ws"); if(!box) return;
+  if(!force && box.contains(document.activeElement)) return;          // never re-render under someone typing
+  try{ WS = await fetch("/workspace.json",{cache:"no-store"}).then(r=>r.json()); }
+  catch(e){ WS = {ok:false, error:"this host did not answer"}; }
+  renderWs();
+}
+function wsVerdict(ok, text){ const v=$("#ws-verdict"); if(v){ v.className="pverdict "+(ok?"ok":"no"); v.textContent=text||""; } }
+async function wsSet(body){
+  wsVerdict(true, "saving…");
+  let r;
+  try{
+    const resp = await fetch("/workspace",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    r = await resp.json().catch(()=>({ok:false, error:"HTTP "+resp.status}));
+    if(resp.status===401 || resp.status===403) r = {ok:false, error:"changing the workspace needs the admin role"};
+  }catch(e){ r = {ok:false, error:String(e)}; }
+  if(r.ok===false || r.error){ wsVerdict(false, r.error || "refused"); return; }
+  WS = r; renderWs(); wsVerdict(true, r.note || "saved");
+}
+function renderWs(){
+  const box = $("#ws"); if(!box) return;
+  const hide = WS && WS.ok===false && /no files adapter/.test(WS.error||"");
+  $("#ws-label").style.display = $("#ws-card").style.display = hide ? "none" : "";
+  if(hide) return;
+  if(!WS || WS.ok===false){ box.innerHTML = `<div class="prob">${esc((WS&&WS.error)||"unknown")}</div>`; return; }
+  const admin = (ROLE==="admin"), dis = admin ? "" : " disabled";
+  const projects = WS.projects || [];
+  const popt = [`<option value="">(the whole root)</option>`]
+    .concat(projects.map(p=>`<option value="${esc(p)}"${p===WS.project?" selected":""}>${esc(p)}</option>`)).join("");
+  const recent = (WS.recent_roots||[]).filter(r=>r!==WS.root);
+  box.innerHTML = `
+    <div class="ws-row"><span class="k">Root</span>
+      <input type="text" id="ws-root" value="${esc(WS.root||"")}" placeholder="D:\\Coder   or   F:\\Project" spellcheck="false"${dis}>
+      <button class="btn" id="ws-use"${dis}>Use this folder</button></div>
+    ${recent.length ? `<div class="ws-row"><span class="k">Recent</span>${recent.map(r=>`<span class="chip" data-root="${esc(r)}" title="switch the workspace back to this folder">${esc(r)}</span>`).join("")}</div>` : ""}
+    <div class="ws-row"><span class="k">Project</span><select id="ws-proj"${WS.exists?"":" disabled"}${dis}>${popt}</select>
+      <button class="btn" id="ws-newbtn"${WS.exists?"":" disabled"}${dis}>+ New project</button>
+      <span id="ws-newrow" style="display:none;gap:8px;align-items:center">
+        <input type="text" id="ws-newname" placeholder="folder name, e.g. FilmLUT" spellcheck="false" style="min-width:160px;max-width:240px">
+        <button class="btn" id="ws-create">Create</button><button class="btn" id="ws-cancel">Cancel</button></span></div>
+    <div class="ws-row"><span class="k"></span><span class="note">the Coder sees only the project you pick; its backups stay inside it, so archiving a project takes them along</span></div>
+    <div class="ws-row"><span class="k">Access</span>
+      <label><input type="checkbox" id="ws-on"${WS.enabled?" checked":""}${dis}> the Coder may use these files</label>
+      <label><input type="checkbox" id="ws-write"${WS.write?" checked":""}${dis}> allow edits <span class="note">(every change keeps a backup and shows in the chat; nothing is deleted)</span></label></div>
+    <div class="ws-row"><span class="k">Sees</span>${WS.fence ? `<span class="fence">${esc(WS.fence)}</span>` : `<span class="note">nothing yet</span>`}${WS.node ? `<span class="note">· on ${esc(WS.node)}</span>` : ""}${WS.enabled ? "" : `<span class="note">· switched off</span>`}</div>
+    ${WS.problem ? `<div class="prob">${esc(WS.problem)}</div>` : ""}
+    <div class="note">Visual Studio builds whatever solution is open: open it from this folder while the Coder works.${admin ? "" : " Changing the workspace needs the admin role."}</div>
+    <div class="pverdict" id="ws-verdict"></div>`;
+  if(!admin) return;
+  const useRoot = ()=>{ const v=$("#ws-root").value.trim(); if(v) wsSet({root:v}); };
+  $("#ws-use").onclick = useRoot;
+  $("#ws-root").onkeydown = e=>{ if(e.key==="Enter") useRoot(); };
+  box.querySelectorAll(".chip[data-root]").forEach(c=> c.onclick = ()=>wsSet({root:c.dataset.root}));
+  $("#ws-proj").onchange = e=> wsSet({project:e.target.value});
+  const showNew = on=>{ $("#ws-newrow").style.display = on ? "inline-flex" : "none"; $("#ws-newbtn").style.display = on ? "none" : "";
+                        if(on){ const i=$("#ws-newname"); i.value=""; i.focus(); } };
+  $("#ws-newbtn").onclick = ()=> showNew(true);
+  $("#ws-cancel").onclick = ()=> showNew(false);
+  const create = ()=>{ const n=$("#ws-newname").value.trim(); if(n) wsSet({new_project:n}); };
+  $("#ws-create").onclick = create;
+  $("#ws-newname").onkeydown = e=>{ if(e.key==="Enter") create(); if(e.key==="Escape") showNew(false); };
+  $("#ws-on").onchange = e=> wsSet({enabled:e.target.checked});
+  $("#ws-write").onchange = e=>{
+    if(e.target.checked && !confirm("Let the Coder change files in\n"+(WS.fence||WS.root)+" ?\n\nEvery change keeps the previous version in .genghis-backup and shows in the chat. Nothing is deleted.")){ e.target.checked=false; return; }
+    wsSet({write:e.target.checked});
+  };
+}
+loadWs(true);
+setInterval(()=>loadWs(false), 30000);
 </script>
 </body></html>

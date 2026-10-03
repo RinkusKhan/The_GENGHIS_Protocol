@@ -39,6 +39,19 @@ a second one says so and leaves), and `crontab -l` should show an `@reboot` line
 log says why it stopped: **`~/genghis/rpc.log`**. If that log says the port "is already served by another process",
 something else started a server by hand: `pgrep -af ggml-rpc-server` finds it; stop it and the loop takes over. **Windows:** the `GENGHIS-rpc` launcher in the Startup folder (`shell:startup`) starts it at logon.
 
+The donor's `-c` tensor cache (`<LLAMA_CACHE or %LOCALAPPDATA% / ~/.cache>/llama.cpp/rpc`) is kept under **30 GB** by
+both launchers, least recently used first, and pruned harder while the disk is under 10 % free; set
+`GENGHIS_RPC_CACHE_GB` to change the cap. A box whose disk keeps filling may be running a donor without its launcher
+(see `launcher` below): nothing prunes then.
+
+## `launcher`: running without its launcher
+The serve or the donor is still running, but the loop that restarts it after a crash and writes its log is gone
+(`serve-laptop.ps1` / `serve.sh`, `rpc-serve-windows.ps1` / `donor-serve.sh`). It keeps working until it crashes, then
+stays down, and its log is silent meanwhile. Stop the process **by its PID** (the fix line names it; never `pkill -f` a
+plain pattern, AGENTS.md rule 10) and start its launcher: on Windows the Startup entry (`GENGHIS-serve.vbs` /
+`GENGHIS-rpc.vbs`), on Linux the script its `@reboot` line runs. Seen on the laptop (2026-10-01) with both launchers
+dead days apart; the cause of their deaths was not found.
+
 ## `llama.cpp`: built from the wrong commit
 Never "fix" this by upgrading everything else. Rebuild **this** box at the pinned commit with the installer, which
 checks the commit out for you. A box at another commit cannot work with the fleet, and the failures look random.

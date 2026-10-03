@@ -1,0 +1,19 @@
+{
+  "id": "files",
+  "name": "Files",
+  "description": "Read, list, find and search files -- only inside the folders named below. Built into GENGHIS (D55).",
+
+  "enabled": false,
+  "_comment_enabled": "OFF as shipped. Switching it on lets a model read everything under `roots` (never key or credential files).",
+
+  "transport": "files",
+  "roots": {
+    "projects": "~/projects"
+  },
+  "_comment_roots": "Name -> folder. The model works in 'name/sub/path' and cannot leave these folders: paths are resolved to their real location first, so a symlink or '..' does not escape. List only what a model should see. On Windows: \"E:\\Projects\".",
+
+  "write": false,
+  "_comment_write": "true adds write_file and replace_text. Every write keeps the previous version under <root>/.genghis-backup/<time>/ and the chat shows the diff. There is no delete, and .git is never written.",
+
+  "_comment_node": "Add \"node\": \"<fleet id>\" when the folders live on another box than the one answering the chat; that box's serve does the reading, and ITS copy of this file decides what is allowed."
+}

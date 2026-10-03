@@ -1,0 +1,15 @@
+{
+  "id": "my-gpu-app",
+  "name": "My GPU app",
+  "desc": "A local app that needs the whole GPU while it runs.",
+  "glyph": "▶",
+  "cls": "steel",
+  "gpu": true,
+  "start": ["/opt/my-gpu-app/run.sh", "--port", "7860"],
+  "stop": ["bash", "-c", "pkill -f 'my-gpu-app[/]run'; for i in 1 2 3 4 5 6 7 8; do pgrep -f 'my-gpu-app[/]run' >/dev/null || exit 0; sleep 1; done; pkill -9 -f 'my-gpu-app[/]run'; sleep 1; ! pgrep -f 'my-gpu-app[/]run' >/dev/null"],
+  "probe": "http://127.0.0.1:7860/",
+  "open": "http://localhost:7860/",
+  "open_note": "Opens on the machine it runs on.",
+  "start_s": 120,
+  "log": "/tmp/my-gpu-app.log"
+}

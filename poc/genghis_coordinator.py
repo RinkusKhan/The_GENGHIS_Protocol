@@ -676,7 +676,8 @@ def live_donors(fleet):
     return [d for d in fleet.get("donors", [])
             if d.get("status") == "up" and d.get("role", "compute") in (None, "compute")
             and (not d.get("local") or is_self_node(d) or has_rpc(d))    # a foreign local anchor is usable only if it publishes an RPC endpoint (D27)
-            and (d.get("lend", True) or is_self_node(d))]                # lend off (D35): only its owner may use it
+            and (d.get("lend", True) or is_self_node(d))                 # lend off (D35): only its owner may use it
+            and not d.get("gpu_hold")]                                   # D56: a home service has the whole card
 
 
 # ---------------------------------------------------------------------------
@@ -1858,6 +1859,78 @@ def read_attachments(data):
     return notes
 
 
+def _msg_text(m):
+    c = (m or {}).get("content")
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return "\n".join(str(x.get("text") or "") for x in c if isinstance(x, dict))
+    return ""
+
+
+# Code models write ```python fences by reflex; Open WebUI only RUNS code inside its tag, so a fenced block is shown, not
+# executed (the first real test, 2026-09-26: correct code, never run). Said first, in the system message, in plain words.
+CI_HOWTO = ("\n\nTo RUN code, write it exactly like this and then stop and wait for the output:\n"
+            "<code_interpreter type=\"code\" lang=\"python\">\nprint('hello')\n</code_interpreter>\n"
+            "Code in ``` fences is only displayed, never run. When the user asks you to DO something with their files, run "
+            "the code; do not just show it. After the output comes back, say what happened in a sentence or two.\n\n"
+            # 2026-09-26: the model followed Open WebUI's hint (os.listdir) and saw only a folder -- the user's archive was
+            # inside it -- then said "FolderTest is a directory, it cannot be unzipped".
+            "The user's files are often INSIDE folders. Your first step is always to see everything, with exactly this:\n"
+            "<code_interpreter type=\"code\" lang=\"python\">\nimport os\nfor root, dirs, files in os.walk('/mnt/uploads'):\n"
+            "    for f in files:\n        p = os.path.join(root, f)\n        print(p, os.path.getsize(p), 'bytes')\n"
+            "</code_interpreter>\n"
+            "(Use this rather than os.listdir, which hides files inside folders.) A folder is not a file: look inside it. "
+            "The Python here can open .zip, .tar, .tar.gz and .gz, but NOT .7z or .rar: if that is what the user has, say so "
+            "plainly and ask them to upload a .zip instead.\n\n"
+            "Packages you import (Pillow as PIL, numpy, pandas, scipy, matplotlib, scikit-image, OpenCV as cv2, ...) "
+            "are loaded for you automatically, whatever else these instructions say about installing. If your code fails, "
+            "the error is printed back to you. Only ever report what you saw printed; never describe files or results you "
+            "did not see. This Python runs in the user's browser with limited memory: work through big batches one file at "
+            "a time, print progress, and say so plainly if a job is too big for the browser.\n\n"
+            # 2026-09-28: the save worked, but the Files panel does not refresh itself -- "it didn't write".
+            "Save results into /mnt/uploads. When you have saved a file, tell the user its name and that it appears in "
+            "their Files panel after they press the panel's refresh button.")
+
+
+def has_code_interpreter(msgs):
+    """Open WebUI's Code Interpreter in its plain (non-native) mode arrives as TEXT in the conversation: instructions to
+    write <code_interpreter> blocks, which the chat UI runs in the user's browser (pyodide) against the files in its Files
+    panel (/mnt/uploads). Nothing in `tools` says so -- this is how a role learns it can act on the user's files."""
+    return any("<code_interpreter" in _msg_text(m) for m in (msgs or []) if isinstance(m, dict))
+
+
+def ci_handback(data):
+    """Open WebUI's Code Interpreter hands a run's result back by appending it to the model's OWN unfinished answer
+    (<code_interpreter_output>...) and asking it to go on. A llama-server template closes that answer and starts a new one,
+    so the model saw the user's request again and did the whole task again -- five identical runs, no final answer
+    (2026-09-26, the first run that really executed). Restate the output as a short user turn instead: the model answers
+    it, which is what Open WebUI wanted all along. Open WebUI passes only stdout (not stderr), so an empty result is said
+    as "printed nothing or failed". Returns True when it changed the request."""
+    msgs = data.get("messages")
+    if not isinstance(msgs, list) or not msgs or not isinstance(msgs[-1], dict) or msgs[-1].get("role") != "assistant":
+        return False
+    txt = _msg_text(msgs[-1])
+    if "</code_interpreter>" not in txt:
+        return False
+    outs = re.findall(r"<code_interpreter_output>\s*(.*?)\s*</code_interpreter_output>", txt, re.S)
+    last_block = txt.rsplit("</code_interpreter>", 1)[1]
+    got = outs[-1] if outs and "<code_interpreter_output>" in last_block else ""
+    if got.strip():
+        note = "Here is what your code printed when it ran:\n\n" + got[:6000]
+    else:
+        # Not "a failure" (the model re-listed an empty folder five times) and not "fine, go on" either (it then reported
+        # 193 upscaled images that were never made) -- just the fact, and what may be claimed from it (2026-09-26).
+        note = ("Your code ran and printed nothing. That can be right (an empty folder), but nothing was confirmed: if the "
+                "step was meant to create or change files, check that they exist before you say so. Do not run the same "
+                "code again.")
+    note += ("\n\nOnly report what you actually saw printed. If an ERROR was printed, fix the cause and run again. If the "
+             "task is done, answer in plain words: what you did and what came out (files, sizes, paths, all as printed). "
+             "Run more code only for a step that is NOT done yet -- never run the same code again.")
+    msgs.append({"role": "user", "content": note})
+    return True
+
+
 def apply_role_to_request(res, data):
     """Put the role INTO the OpenAI request: its system prompt in front of the conversation (never replacing
     a system message the caller wrote -- the role's goes first, the caller's still applies), and a note when
@@ -1888,20 +1961,42 @@ def apply_role_to_request(res, data):
     names = [((t.get("function") or {}).get("name") or t.get("name")) for t in (data.get("tools") or []) + atools
              if isinstance(t, dict)]
     names = [n for n in names if n]
+    ci = has_code_interpreter(msgs)
+    last_user = next((_msg_text(m) for m in reversed(msgs or []) if isinstance(m, dict) and m.get("role") == "user"), "")
+    print(f"[role] {role['id']}: code interpreter {'ON' if ci else 'off'} in this request; {len(msgs or [])} message(s), "
+          f"last user message {len(last_user)} chars, tools {len(data.get('tools') or [])}", flush=True)
     if names:
         tline = ("Tools you can call in this conversation: " + ", ".join(names) + ". You have no others; never "
                  "claim a result you did not get from one of them.")
+        if ci:
+            tline += (" You can also run Python in the user's browser with the code interpreter described in this "
+                      "conversation: that is how you read, unpack, create and change the files in their Files panel (/mnt/uploads)."
+                      + CI_HOWTO)
+    elif ci:
+        # 2026-09-26: this line used to say "you cannot read files" even when the chat had switched the code interpreter
+        # on -- the model was told the opposite of what it could do.
+        tline = ("You cannot search the web or reach other programs from here, but you CAN run Python in the user's browser "
+                 "with the code interpreter described in this conversation. That is how you read, unpack, create and change "
+                 "the files in their Files panel (/mnt/uploads). Use it whenever the task needs it, and never claim a result "
+                 "you did not get from running it." + CI_HOWTO)
     else:
         tline = ("You have no tools in this conversation: you cannot search the web, open links, read files, or "
                  "reach any other program. Anything looked up for you is already in the messages. Say so plainly "
                  "when that is not enough, and never claim to have looked something up or to have access you lack.")
     sysp = (sysp + "\n\n" + tline) if sysp else tline
     if isinstance(msgs, list):
+        # ONE system message at position 0: the role's, then the caller's. Several chat templates render only the first
+        # (or refuse a second), so a caller's system text -- Open WebUI puts its file-system notes there -- must not be
+        # left standing behind ours to be dropped in silence.
+        if msgs and isinstance(msgs[0], dict) and msgs[0].get("role") == "system" and _msg_text(msgs[0]).strip():
+            sysp = sysp + "\n\n" + _msg_text(msgs[0])
+            msgs = msgs[1:]
         data["messages"] = [{"role": "system", "content": sysp}] + msgs
     # D49: any adapter the role names that is present, enabled and reachable contributes its operations as tools
     # GENGHIS itself executes; the client's own tools (if any) are left exactly as they are.
     res["owned_tools"] = owned
     notes.extend(anotes)
+    notes.extend(adapter_belt_warnings(role))           # D55
     if atools:
         data["tools"] = (data.get("tools") or []) + atools
         data.setdefault("tool_choice", "auto")
@@ -2016,6 +2111,8 @@ def load_adapters(force=False):
             a["port"]      = int(raw.get("port") or 0)
             a["timeout"]   = float(raw.get("timeout") or 30)
             a["operations"] = raw.get("operations") if isinstance(raw.get("operations"), dict) else {}
+            a["allow"]     = [str(x) for x in raw.get("allow")] if isinstance(raw.get("allow"), list) else []   # D55: mcp
+            a["url"]       = (raw.get("url") or (f"http://{a['host']}:{a['port']}/" if a["transport"] == "mcp" else "")).strip()
             a["source"]    = p
             out[aid] = a
         _ADAPTER_CACHE["stamp"], _ADAPTER_CACHE["adapters"] = stamp, out
@@ -2213,6 +2310,997 @@ def web_operation(op, args):
     return json.dumps({"ok": False, "error": f"the web adapter has no operation '{op}'"})
 
 
+# --- D55: roles that act on a workstation -- MCP tool servers and fenced files ------------------------------------------
+# The two transports that turn "the Coder talks about code" into "the Coder works in the codebase" (2026-09-26).
+#
+# `mcp`   -- speak the Model Context Protocol (streamable HTTP, JSON-RPC; replies as JSON or SSE) to a tool server that
+#            already exists: Visual Studio's (build, Error List, documents, debugger), and any other. The adapter file
+#            MUST list the tools it allows ("allow"); an MCP adapter that lists none offers none. A server hands out
+#            dozens of tools, and a local model shown dozens calls them instead of answering (D37) -- the list is also
+#            the human's choice of what the model may do, which is the D49 rule in MCP form.
+# `files` -- a built-in, fenced file tool. It touches only the folders the file names ("roots"), resolved to real paths
+#            so a symlink or "..\.." cannot leave them. Reading, listing, finding and searching are on; writing only when
+#            the file says "write": true, and even then every write keeps the previous version in the root's
+#            `.genghis-backup/` and returns the diff, so the chat shows what changed and it can be put back. There is no
+#            delete. Key and credential files are refused whatever the roots say.
+#
+# Either runs on the box that has the program or the files (`node`, the D49 relay): Visual Studio and the E: drive live on
+# the laptop, and a role answering on the NUC reaches them through the laptop's serve.
+MCP_PROTOCOL      = "2025-03-26"
+MCP_RESULT_MAX_CH = 12000              # a tool's text handed to the model
+_MCP_SESSIONS     = {}                 # url -> {"sid", "n", "ready", "lock"}
+_MCP_SESSIONS_LOCK = threading.Lock()
+_ADAPTER_OPS_CACHE = {}                # (aid, source-mtime or node) -> (t, ops)
+FILES_READ_MAX_KB = 256
+FILES_WRITE_MAX_KB = 1024
+FILES_SCAN_MAX    = 20000              # files a find/search walks before it stops and says so
+FILES_SKIP_DIRS   = {".git", ".svn", ".hg", ".vs", ".idea", "node_modules", "__pycache__", ".genghis-backup",
+                     "bin", "obj", ".venv", "venv", "env", "build", "out", "x64", "x86", "Debug", "Release"}
+FILES_SECRET_RE   = re.compile(r"(^|[\\/])(\.env(\..*)?|.*\.(pem|key|pfx|p12|kdbx|ppk)|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|"
+                               r"\.git-credentials|\.netrc|credentials(\.json)?|secrets?\.(json|ya?ml|toml))$|"
+                               r"(^|[\\/])\.ssh([\\/]|$)", re.I)
+
+
+def _tool_safe(name):
+    """OpenAI function names: [A-Za-z0-9_-]{1,64}."""
+    return re.sub(r"[^A-Za-z0-9_-]", "_", str(name))[:64]
+
+
+# ---- MCP client (stdlib) ----
+def _mcp_post(a, payload, sid=None, want_id=None):
+    """POST one JSON-RPC message. Returns (session id, the reply whose id == want_id, or None). A reply may come back as
+    plain JSON or as an SSE stream; the stream is read only until our reply arrives -- a server may keep it open."""
+    headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+               "MCP-Protocol-Version": MCP_PROTOCOL}
+    if sid:
+        headers["Mcp-Session-Id"] = sid
+    req = urllib.request.Request(a["url"], data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=a["timeout"]) as r:
+        new_sid = r.headers.get("Mcp-Session-Id") or sid
+        ctype = (r.headers.get("Content-Type") or "").lower()
+        if want_id is None:
+            return new_sid, None
+        if "text/event-stream" in ctype:
+            data_lines = []
+            for raw in r:
+                ln = raw.decode("utf-8", "replace").rstrip("\r\n")
+                if ln.startswith("data:"):
+                    data_lines.append(ln[5:].lstrip())
+                elif ln == "" and data_lines:
+                    try:
+                        msg = json.loads("\n".join(data_lines))
+                    except ValueError:
+                        msg = None
+                    data_lines = []
+                    for m in (msg if isinstance(msg, list) else [msg]):
+                        if isinstance(m, dict) and m.get("id") == want_id:
+                            return new_sid, m
+            return new_sid, None
+        body = r.read().decode("utf-8", "replace").strip()
+        if not body:
+            return new_sid, None
+        msg = json.loads(body)
+        for m in (msg if isinstance(msg, list) else [msg]):
+            if isinstance(m, dict) and m.get("id") == want_id:
+                return new_sid, m
+        return new_sid, None
+
+
+def _mcp_session(a):
+    with _MCP_SESSIONS_LOCK:
+        return _MCP_SESSIONS.setdefault(a["url"], {"sid": None, "n": 0, "ready": False, "lock": threading.Lock()})
+
+
+def _mcp_call(a, method, params=None):
+    """One MCP request on this adapter's session: initialize once, re-initialize when the server forgets us (a restarted
+    Visual Studio answers the old session id with 404). Returns the result object; raises with the server's message."""
+    st = _mcp_session(a)
+    with st["lock"]:
+        for attempt in (1, 2):
+            try:
+                if not st["ready"]:
+                    st["n"] += 1
+                    sid, msg = _mcp_post(a, {"jsonrpc": "2.0", "id": st["n"], "method": "initialize",
+                                             "params": {"protocolVersion": MCP_PROTOCOL, "capabilities": {},
+                                                        "clientInfo": {"name": "genghis", "version": "1"}}},
+                                         None, want_id=st["n"])
+                    if not msg or "error" in msg:
+                        raise RuntimeError(((msg or {}).get("error") or {}).get("message") or "no reply to initialize")
+                    st["sid"] = sid
+                    _mcp_post(a, {"jsonrpc": "2.0", "method": "notifications/initialized"}, sid)
+                    st["ready"] = True
+                st["n"] += 1
+                sid, msg = _mcp_post(a, {"jsonrpc": "2.0", "id": st["n"], "method": method, "params": params or {}},
+                                     st["sid"], want_id=st["n"])
+                st["sid"] = sid
+            except urllib.error.HTTPError as e:
+                if e.code in (400, 404) and attempt == 1 and st["ready"]:
+                    st["ready"], st["sid"] = False, None          # the server forgot the session: start a new one
+                    continue
+                raise
+            if msg is None:
+                raise RuntimeError(f"no reply to {method}")
+            if "error" in msg:
+                raise RuntimeError(str((msg["error"] or {}).get("message") or msg["error"]))
+            return msg.get("result") or {}
+
+
+def _mcp_list_tools(a):
+    tools, cursor = [], None
+    for _ in range(20):
+        res = _mcp_call(a, "tools/list", {"cursor": cursor} if cursor else {})
+        tools += res.get("tools") or []
+        cursor = res.get("nextCursor")
+        if not cursor:
+            break
+    return tools
+
+
+def _mcp_ops(a):
+    """{tool name: spec} for the tools this adapter ALLOWS that the server actually has."""
+    allow = [str(x) for x in (a.get("allow") or [])]
+    if not allow:
+        return {}
+    have = {t.get("name"): t for t in _mcp_list_tools(a) if isinstance(t, dict)}
+    return {n: {"description": (have[n].get("description") or n)[:1000],
+                "parameters": have[n].get("inputSchema") or {"type": "object", "properties": {}}}
+            for n in allow if n in have}
+
+
+def mcp_operation(a, op, args):
+    try:
+        res = _mcp_call(a, "tools/call", {"name": op, "arguments": args or {}})
+    except Exception as e:
+        return json.dumps({"ok": False, "error": f"{a['name']} did not run {op}: {e.__class__.__name__}: {e}"})
+    parts = []
+    for c in res.get("content") or []:
+        if not isinstance(c, dict):
+            continue
+        if c.get("type") == "text":
+            parts.append(c.get("text") or "")
+        elif c.get("type") == "resource":
+            parts.append(((c.get("resource") or {}).get("text")) or f"[resource {((c.get('resource') or {}).get('uri'))}]")
+        else:
+            parts.append(f"[{c.get('type')} content omitted]")
+    text = "\n".join(p for p in parts if p)
+    if res.get("structuredContent") and not text:
+        text = json.dumps(res["structuredContent"])[:MCP_RESULT_MAX_CH]
+    out = {"ok": not res.get("isError"), "result": text[:MCP_RESULT_MAX_CH]}
+    if len(text) > MCP_RESULT_MAX_CH:
+        out["truncated"] = f"{len(text)} characters; the first {MCP_RESULT_MAX_CH} are shown"
+    return json.dumps(out)
+
+
+# ---- fenced files ----
+def _files_roots(a):
+    """{name: real path} for the adapter's roots that exist on this box. Workspace mode (`root`, + `project`) is ONE
+    folder: the project inside the root, or the whole root; a fixed `roots` list is the older form."""
+    if a.get("root"):
+        base = os.path.realpath(os.path.expanduser(str(a["root"])))
+        if not os.path.isdir(base) or _ws_forbidden(base):
+            return {}
+        proj = str(a.get("project") or "").strip()
+        path = os.path.realpath(os.path.join(base, proj)) if proj else base
+        try:
+            inside = os.path.normcase(os.path.commonpath([path, base])) == os.path.normcase(base)
+        except ValueError:
+            inside = False
+        if not inside or not os.path.isdir(path):
+            return {}
+        name = re.sub(r"[\\/:]+", "", proj or os.path.basename(base.rstrip("\\/")) or base[:1]) or "root"
+        return {name: path}
+    raw = a.get("roots") or {}
+    if isinstance(raw, list):
+        raw = {os.path.basename(os.path.normpath(p)) or p: p for p in raw}
+    out = {}
+    for name, p in raw.items():
+        rp = os.path.realpath(os.path.expanduser(str(p)))
+        if os.path.isdir(rp):
+            out[str(name)] = rp
+    return out
+
+
+def _files_rel(roots, real):
+    """'root/relative/path' for display (the model works in these names, never in drive letters)."""
+    for name, r in roots.items():
+        try:
+            if os.path.normcase(os.path.commonpath([real, r])) == os.path.normcase(r):
+                rel = os.path.relpath(real, r).replace("\\", "/")
+                return name if rel == "." else f"{name}/{rel}"
+        except ValueError:
+            pass
+    return real
+
+
+def _files_resolve(a, p, must_exist=True):
+    """(real path, None) inside a root, or (None, why not)."""
+    roots = _files_roots(a)
+    if not roots:
+        return None, "none of this adapter's folders exist on this box"
+    p = str(p or "").strip().strip('"')
+    if not p:
+        p = next(iter(roots)) if len(roots) == 1 else ""
+        if not p:
+            return None, f"say which folder: {', '.join(roots)}"
+    first, _, rest = p.replace("\\", "/").partition("/")
+    if first in roots:
+        cand = os.path.join(roots[first], rest)
+    elif os.path.isabs(p):
+        cand = p
+    elif len(roots) == 1:
+        cand = os.path.join(next(iter(roots.values())), p)
+    else:
+        return None, f"'{p}' does not start with one of this adapter's folders: {', '.join(roots)}"
+    real = os.path.realpath(cand)
+    inside = False
+    for r in roots.values():
+        try:
+            inside = inside or os.path.normcase(os.path.commonpath([real, r])) == os.path.normcase(r)
+        except ValueError:
+            pass                                          # another drive
+    if not inside:
+        return None, f"'{p}' is outside the folders this adapter may touch ({', '.join(roots)})"
+    if FILES_SECRET_RE.search(real):
+        return None, f"'{p}' looks like a key or credential file; this adapter never opens those"
+    if must_exist and not os.path.exists(real):
+        return None, f"'{p}' does not exist"
+    return real, None
+
+
+def _files_is_binary(path):
+    try:
+        with open(path, "rb") as f:
+            return b"\0" in f.read(8192)
+    except OSError:
+        return True
+
+
+def _files_walk(a, base):
+    """Yield real file paths under `base`, skipping build/VCS folders, at most FILES_SCAN_MAX; last item None if cut."""
+    n = 0
+    for dp, dns, fns in os.walk(base):
+        dns[:] = [d for d in dns if d not in FILES_SKIP_DIRS and not d.startswith(".genghis")]
+        for fn in fns:
+            n += 1
+            if n > FILES_SCAN_MAX:
+                yield None
+                return
+            yield os.path.join(dp, fn)
+
+
+def _files_ops(a):
+    ops = {
+        "list_roots": {"description": "The folders you may work in, and whether you may write there. Call this first.",
+                       "parameters": {"type": "object", "properties": {}}},
+        "list_dir": {"description": "List a folder: names, whether each is a file or folder, and file sizes.",
+                     "parameters": {"type": "object", "properties": {
+                         "path": {"type": "string", "description": "Folder, as 'root/sub/folder' (from list_roots)."}},
+                         "required": ["path"]}},
+        "read_file": {"description": "Read a text file with line numbers. Use start_line/max_lines for big files.",
+                      "parameters": {"type": "object", "properties": {
+                          "path": {"type": "string", "description": "File, as 'root/sub/file.ext'."},
+                          "start_line": {"type": "integer", "description": "First line to show (1-based). Default 1."},
+                          "max_lines": {"type": "integer", "description": "How many lines. Default 400, at most 2000."}},
+                          "required": ["path"]}},
+        "find_files": {"description": "Find files by name pattern, e.g. '*.cpp' or 'src/**/Color*.h'.",
+                       "parameters": {"type": "object", "properties": {
+                           "pattern": {"type": "string", "description": "A glob matched against the path under 'under'."},
+                           "under": {"type": "string", "description": "Folder to search in. Default: the first root."},
+                           "max_results": {"type": "integer", "description": "Default 100."}},
+                           "required": ["pattern"]}},
+        "search_text": {"description": "Search text files for a word or phrase (case-insensitive). Returns file:line: text.",
+                        "parameters": {"type": "object", "properties": {
+                            "query": {"type": "string", "description": "The exact text to look for (not a regex)."},
+                            "under": {"type": "string", "description": "Folder to search in. Default: the first root."},
+                            "file_pattern": {"type": "string", "description": "Only files matching this glob, e.g. '*.py'."},
+                            "max_results": {"type": "integer", "description": "Default 50."}},
+                            "required": ["query"]}},
+    }
+    if a.get("write"):
+        ops["write_file"] = {"description": "Create or replace a whole text file. The old version is kept as a backup and "
+                                            "the change is shown. Prefer replace_text for a small edit.",
+                             "parameters": {"type": "object", "properties": {
+                                 "path": {"type": "string", "description": "File, as 'root/sub/file.ext'."},
+                                 "content": {"type": "string", "description": "The complete new content of the file."}},
+                                 "required": ["path", "content"]}}
+        ops["replace_text"] = {"description": "Replace one exact piece of text in a file (it must occur exactly once). "
+                                              "The old version is kept as a backup and the change is shown.",
+                               "parameters": {"type": "object", "properties": {
+                                   "path": {"type": "string", "description": "File, as 'root/sub/file.ext'."},
+                                   "old_text": {"type": "string", "description": "The exact text now in the file."},
+                                   "new_text": {"type": "string", "description": "What to put in its place."}},
+                                   "required": ["path", "old_text", "new_text"]}}
+    return ops
+
+
+def _files_backup_and_write(a, real, new_text, old_text):
+    import difflib
+    roots = _files_roots(a)
+    rel = _files_rel(roots, real)
+    root_name = rel.split("/", 1)[0]
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup = None
+    if old_text is not None:
+        bdir = os.path.join(roots[root_name], ".genghis-backup", stamp, os.path.dirname(rel.split("/", 1)[1] if "/" in rel else ""))
+        os.makedirs(bdir, exist_ok=True)
+        backup = os.path.join(bdir, os.path.basename(real))
+        shutil.copy2(real, backup)
+    os.makedirs(os.path.dirname(real), exist_ok=True)
+    with open(real, "w", encoding="utf-8", newline="") as f:
+        f.write(new_text)
+    diff = "".join(difflib.unified_diff((old_text or "").splitlines(True), new_text.splitlines(True),
+                                        fromfile=f"a/{rel}", tofile=f"b/{rel}", n=2))
+    out = {"ok": True, "written": rel, "backup": _files_rel(roots, backup) if backup else None,
+           "diff": diff[:6000] + ("\n[diff truncated]" if len(diff) > 6000 else "")}
+    print(f"[adapter] {a['id']}: wrote {rel}" + (f" (previous kept in {out['backup']})" if backup else " (new file)"), flush=True)
+    return json.dumps(out)
+
+
+def files_operation(a, op, args):
+    roots = _files_roots(a)
+    try:
+        if op == "list_roots":
+            return json.dumps({"ok": True, "roots": list(roots), "write": bool(a.get("write")),
+                               "note": "Paths are written 'root/sub/path'."})
+        if op == "list_dir":
+            real, why = _files_resolve(a, args.get("path"))
+            if why: return json.dumps({"ok": False, "error": why})
+            if not os.path.isdir(real): return json.dumps({"ok": False, "error": "that is a file, not a folder"})
+            items = []
+            for n in sorted(os.listdir(real), key=str.lower)[:500]:
+                p = os.path.join(real, n)
+                items.append({"name": n, "type": "folder" if os.path.isdir(p) else "file",
+                              **({"bytes": os.path.getsize(p)} if os.path.isfile(p) else {})})
+            return json.dumps({"ok": True, "folder": _files_rel(roots, real), "entries": items})
+        if op == "read_file":
+            real, why = _files_resolve(a, args.get("path"))
+            if why: return json.dumps({"ok": False, "error": why})
+            if os.path.isdir(real): return json.dumps({"ok": False, "error": "that is a folder; use list_dir"})
+            if _files_is_binary(real): return json.dumps({"ok": False, "error": "that is a binary file, not text"})
+            start = max(1, int(args.get("start_line") or 1)); cnt = max(1, min(int(args.get("max_lines") or 400), 2000))
+            lines, total, budget = [], 0, FILES_READ_MAX_KB * 1024
+            with open(real, encoding="utf-8", errors="replace", newline="") as f:
+                for i, ln in enumerate(f, 1):
+                    total = i
+                    if start <= i < start + cnt and budget > 0:
+                        lines.append(f"{i:>6}  {ln.rstrip(chr(13) + chr(10))}"); budget -= len(ln)
+            return json.dumps({"ok": True, "file": _files_rel(roots, real), "lines": f"{start}-{start + len(lines) - 1} of {total}",
+                               "text": "\n".join(lines)})
+        if op in ("find_files", "search_text"):
+            base, why = _files_resolve(a, args.get("under") or "")
+            if why: return json.dumps({"ok": False, "error": why})
+            import fnmatch
+            pat = str(args.get("pattern") or args.get("file_pattern") or "*")
+            limit = max(1, min(int(args.get("max_results") or (100 if op == "find_files" else 50)), 500))
+            q = str(args.get("query") or "").lower()
+            if op == "search_text" and not q:
+                return json.dumps({"ok": False, "error": "search_text needs a query"})
+            hits, cut = [], False
+            for p in _files_walk(a, base):
+                if p is None:
+                    cut = True; break
+                rel = os.path.relpath(p, base).replace("\\", "/")
+                if not (fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(os.path.basename(p), pat)):
+                    continue
+                if FILES_SECRET_RE.search(p):
+                    continue
+                if op == "find_files":
+                    hits.append(_files_rel(roots, p))
+                else:
+                    try:
+                        if os.path.getsize(p) > 2 * 1024 * 1024 or _files_is_binary(p):
+                            continue
+                        with open(p, encoding="utf-8", errors="replace") as f:
+                            for i, ln in enumerate(f, 1):
+                                if q in ln.lower():
+                                    hits.append(f"{_files_rel(roots, p)}:{i}: {ln.strip()[:200]}")
+                                    if len(hits) >= limit: break
+                    except OSError:
+                        continue
+                if len(hits) >= limit:
+                    break
+            out = {"ok": True, "matches": hits[:limit], "count": len(hits[:limit])}
+            if cut: out["note"] = f"stopped after looking at {FILES_SCAN_MAX} files; search a smaller folder"
+            elif len(hits) >= limit: out["note"] = f"showing the first {limit}; narrow the search for more"
+            return json.dumps(out)
+        if op in ("write_file", "replace_text"):
+            if not a.get("write"):
+                return json.dumps({"ok": False, "error": "this adapter is read-only (its file does not say \"write\": true)"})
+            real, why = _files_resolve(a, args.get("path"), must_exist=(op == "replace_text"))
+            if why: return json.dumps({"ok": False, "error": why})
+            if ".genghis-backup" in real.replace("\\", "/").split("/") or ".git" in real.replace("\\", "/").split("/"):
+                return json.dumps({"ok": False, "error": "that folder is off limits for writing"})
+            old = None
+            if os.path.exists(real):
+                if os.path.isdir(real) or _files_is_binary(real):
+                    return json.dumps({"ok": False, "error": "not a text file"})
+                with open(real, "rb") as f:
+                    rawb = f.read()
+                try:
+                    old = rawb.decode("utf-8")
+                except UnicodeDecodeError:
+                    return json.dumps({"ok": False, "error": "that file is not UTF-8 text; not changing it"})
+            if op == "write_file":
+                new = str(args.get("content") if args.get("content") is not None else "")
+                if old is not None and "\r\n" in old and "\r\n" not in new:
+                    new = new.replace("\n", "\r\n")           # keep the file's own line endings
+            else:
+                ot, nt = str(args.get("old_text") or ""), str(args.get("new_text") or "")
+                if not ot:
+                    return json.dumps({"ok": False, "error": "replace_text needs old_text"})
+                if "\r\n" in old and "\r\n" not in ot:
+                    ot, nt = ot.replace("\n", "\r\n"), nt.replace("\n", "\r\n")
+                n = old.count(ot)
+                if n != 1:
+                    return json.dumps({"ok": False, "error": f"old_text occurs {n} times in the file; it must occur exactly "
+                                                             f"once (include more surrounding text)"})
+                new = old.replace(ot, nt, 1)
+            if len(new.encode("utf-8")) > FILES_WRITE_MAX_KB * 1024:
+                return json.dumps({"ok": False, "error": f"content is over {FILES_WRITE_MAX_KB} KB"})
+            if old == new:
+                return json.dumps({"ok": True, "written": _files_rel(roots, real), "note": "no change"})
+            return _files_backup_and_write(a, real, new, old)
+        return json.dumps({"ok": False, "error": f"the files adapter has no operation '{op}'"})
+    except (TypeError, ValueError) as e:
+        return json.dumps({"ok": False, "error": f"bad argument: {e}"})
+    except OSError as e:
+        return json.dumps({"ok": False, "error": f"{e.__class__.__name__}: {e}"})
+
+
+def adapter_ops(a):
+    """{operation: spec} an adapter offers. Blender/web declare theirs in the file; `files` has built-in ones; `mcp` asks
+    the server (only the allowed tools) -- on this box, or through the node's serve when the server lives there."""
+    t = a["transport"]
+    if t == "files":
+        return _files_ops(a)
+    if t != "mcp":
+        return a["operations"] or {}
+    rem = _adapter_node(a)
+    key = (a["id"], a.get("url"), tuple(a.get("allow") or []), rem[0]["id"] if rem and rem[0] != "missing" else "")
+    hit = _ADAPTER_OPS_CACHE.get(key)
+    if hit and time.time() - hit[0] < 60:
+        return hit[1]
+    if rem:
+        if rem[0] == "missing":
+            return {}
+        try:
+            ops = (_remote_json(rem[1] + "/adapter.json?ops=1&id=" + urllib.parse.quote(a["id"]), ttl=0, timeout=a["timeout"])
+                   or {}).get("ops") or {}
+        except Exception:
+            ops = {}
+    else:
+        ops = _mcp_ops(a)
+    _ADAPTER_OPS_CACHE[key] = (time.time(), ops)
+    return ops
+
+
+def adapter_belt_warnings(role):
+    """A role that can both fetch web pages and reach files or programs can be steered by a page it reads into sending
+    what it reads out, in the address of the next page it fetches. Say so; the fix is two roles."""
+    known = load_adapters()
+    kinds = {known[x]["transport"] for x in (role.get("tools") or []) if x in known and known[x]["enabled"]}
+    if "web" in kinds and kinds & {"files", "mcp", "blender-socket"}:
+        return [f"role '{role['id']}' can both read web pages and reach your files or programs: a page it reads could "
+                f"steer it into sending what it can see out in a link. Give web and local access to different roles."]
+    return []
+
+
+# ---- the Coder's workspace: ONE root the owner points anywhere, and a current project inside it (D55, 2026-09-26) ----
+# Michael: keep projects under D:\Coder, archive one when done, start another -- and for a quick fix on a USB stick,
+# point the root at F:\Project for that session. So the fence is `root` (+ `project`, a folder inside it; "" = the whole
+# root), changed from the Control Room, and saved in the adapter file ON THE BOX THAT HAS THE FOLDERS (its copy decides).
+# Backups go inside the project, so archiving a project takes its history with it. A few places are never a root: a
+# system drive's root, the OS and program folders, the user profile itself and its AppData, any .ssh, and anything that
+# holds GENGHIS's own home -- a model that could edit its adapter file could widen its own fence.
+WS_RECENT_MAX = 6
+
+
+def _ws_forbidden(path):
+    """Why `path` may not be a workspace root, or '' when it may."""
+    rp = os.path.normcase(os.path.realpath(path))
+    def under(p, base):
+        """True when p is base or inside it."""
+        if not p or not base:
+            return False
+        pp, b = os.path.normcase(os.path.realpath(p)), os.path.normcase(os.path.realpath(base))
+        try:
+            return os.path.commonpath([pp, b]) == b
+        except ValueError:
+            return False
+    parts = [x.lower() for x in re.split(r"[\\/]+", rp) if x]
+    if ".ssh" in parts or ".gnupg" in parts:
+        return "a key folder (.ssh / .gnupg) is never a workspace"
+    h = home_dir()
+    if h and (under(h, rp) or under(rp, h)):
+        return "that folder holds GENGHIS's own home (roles and adapters); a model that could edit it could widen its own fence"
+    if platform.system() == "Windows":
+        drive = os.environ.get("SystemDrive", "C:")
+        if rp.rstrip("\\/") == os.path.normcase(drive):
+            return f"the system drive's root ({drive}\\) is too wide; choose a folder on it"
+        for var in ("WINDIR", "ProgramFiles", "ProgramFiles(x86)", "ProgramData", "APPDATA", "LOCALAPPDATA"):
+            v = os.environ.get(var)
+            if v and under(rp, v):
+                return f"{v} belongs to Windows or your programs"
+        prof = os.environ.get("USERPROFILE")
+        if prof and rp == os.path.normcase(os.path.realpath(prof)):
+            return "your whole user folder is too wide; choose a folder inside it"
+    else:
+        if rp == "/" or any(under(rp, x) for x in ("/etc", "/usr", "/bin", "/sbin", "/boot", "/proc", "/sys", "/dev", "/root", "/var", "/lib")):
+            return "that is a system folder"
+        if rp == os.path.normcase(os.path.realpath(os.path.expanduser("~"))):
+            return "your whole home folder is too wide; choose a folder inside it"
+    return ""
+
+
+def _ws_projects(root):
+    try:
+        return sorted((n for n in os.listdir(root) if os.path.isdir(os.path.join(root, n))
+                       and not n.startswith(".") and n not in ("$RECYCLE.BIN", "System Volume Information")), key=str.lower)
+    except OSError:
+        return []
+
+
+def _adapter_save(a, changes):
+    """Rewrite one adapter file with `changes` merged in (atomic), and reload."""
+    with open(a["source"], encoding="utf-8") as f:
+        raw = json.load(f)
+    raw.update(changes)
+    tmp = a["source"] + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps(raw, indent=2, ensure_ascii=False) + "\n")
+    os.replace(tmp, a["source"])
+    return load_adapters(force=True).get(a["id"])
+
+
+def _ws_adapter(aid=None):
+    ads = load_adapters()
+    if aid:
+        a = ads.get(aid)
+        return a if a and a["transport"] == "files" else None
+    return next((a for _, a in sorted(ads.items()) if a["transport"] == "files"), None)
+
+
+def workspace_state(aid=None):
+    """This box's view of a files adapter's workspace. Relayed from the node when the folders live elsewhere."""
+    a = _ws_adapter(aid)
+    if not a:
+        return {"ok": False, "error": "no files adapter in this home (see home.example/adapters/files.json)"}
+    rem = _adapter_node(a)
+    if rem:
+        if rem[0] == "missing":
+            return {"ok": False, "id": a["id"], "error": f"it runs on '{rem[1]}', which is not in the fleet"}
+        try:
+            st = _remote_json(rem[1] + "/workspace.json?id=" + urllib.parse.quote(a["id"]), ttl=0, timeout=8)
+        except Exception as e:
+            return {"ok": False, "id": a["id"], "node": rem[0]["id"],
+                    "error": f"{rem[0]['id']}'s serve did not answer ({e.__class__.__name__})"}
+        st["node"] = rem[0]["id"]
+        st["here_enabled"], st["here_write"] = bool(a["enabled"]), bool(a.get("write"))
+        return st
+    root = str(a.get("root") or "")
+    st = {"ok": True, "id": a["id"], "node": None, "enabled": bool(a["enabled"]), "write": bool(a.get("write")),
+          "root": root, "project": str(a.get("project") or ""), "recent_roots": list(a.get("recent_roots") or []),
+          "exists": bool(root) and os.path.isdir(root), "projects": [], "fence": "", "problem": ""}
+    if not root:
+        st["problem"] = "no root folder chosen yet" if not a.get("roots") else "this adapter uses a fixed 'roots' list"
+        if a.get("roots"):
+            st["fence"] = ", ".join(_files_roots(a).values())
+        return st
+    if not st["exists"]:
+        st["problem"] = f"{root} is not there (a USB drive taken out?) -- the Coder sees no files until it is back or you choose another"
+        return st
+    st["projects"] = _ws_projects(root)
+    fence = list(_files_roots(a).values())
+    st["fence"] = fence[0] if fence else ""
+    if st["project"] and not fence:
+        st["problem"] = f"project folder '{st['project']}' is not in {root}"
+    return st
+
+
+def workspace_set(body, aid=None):
+    """Change the workspace: root, project ("" = whole root), new_project, write, enabled. Validated on THIS box."""
+    a = _ws_adapter(aid or body.get("id"))
+    if not a:
+        return {"ok": False, "error": "no files adapter in this home"}
+    changes, note = {}, []
+    if "root" in body:
+        root = os.path.expanduser(str(body.get("root") or "").strip().strip('"'))
+        if not root:
+            return {"ok": False, "error": "a root folder is needed"}
+        if not os.path.isabs(root):
+            return {"ok": False, "error": f"'{root}' is not a full path (e.g. D:\\Coder or F:\\Project)"}
+        if not os.path.isdir(root):
+            return {"ok": False, "error": f"{root} does not exist on this box"}
+        why = _ws_forbidden(root)
+        if why:
+            return {"ok": False, "error": f"{root} can't be the workspace: {why}"}
+        root = os.path.realpath(root)
+        old = os.path.realpath(str(a["root"])) if a.get("root") else ""
+        if os.path.normcase(root) != os.path.normcase(old):
+            changes["project"] = ""                          # a new root starts at its top; pick a project after
+        changes["root"] = root
+        rec = [root] + [r for r in (a.get("recent_roots") or []) if os.path.normcase(r) != os.path.normcase(root)]
+        changes["recent_roots"] = rec[:WS_RECENT_MAX]
+        note.append(f"workspace root: {root}")
+    root = changes.get("root") or str(a.get("root") or "")
+    if body.get("new_project") is not None:
+        name = str(body.get("new_project") or "").strip()
+        if not name or not re.match(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,80}$", name) or ".." in name:
+            return {"ok": False, "error": "a project name is letters, digits, spaces, . _ - (no slashes)"}
+        if not root or not os.path.isdir(root):
+            return {"ok": False, "error": "choose a root folder first"}
+        os.makedirs(os.path.join(root, name), exist_ok=True)
+        changes["project"] = name
+        note.append(f"new project folder {os.path.join(root, name)}")
+    elif "project" in body:
+        name = str(body.get("project") or "").strip()
+        if name and (name not in _ws_projects(root)):
+            return {"ok": False, "error": f"there is no folder '{name}' in {root}"}
+        changes["project"] = name
+        note.append(f"project: {name or '(the whole root)'}")
+    for k in ("write", "enabled"):
+        if k in body:
+            changes[k] = bool(body[k])
+            note.append(f"{'edits' if k == 'write' else 'the Coder may use files'}: {'on' if body[k] else 'off'}")
+    if not changes:
+        return {"ok": False, "error": "nothing to change"}
+    _adapter_save(a, changes)
+    print(f"[workspace] {a['id']}: " + "; ".join(note), flush=True)
+    st = workspace_state(a["id"])
+    st["note"] = "; ".join(note)
+    return st
+
+
+def workspace_apply(body):
+    """The Control Room's change, on whichever host it was made: run here when the folders are here, else send it to the
+    node that has them (ITS copy decides), and keep this box's own copy of the two switches it checks before offering
+    the tools (enabled, write) in step."""
+    a = _ws_adapter(body.get("id"))
+    if not a:
+        return {"ok": False, "error": "no files adapter in this home"}
+    rem = _adapter_node(a)
+    if not rem:
+        return workspace_set(body, a["id"])
+    if rem[0] == "missing":
+        return {"ok": False, "error": f"it runs on '{rem[1]}', which is not in the fleet"}
+    req = urllib.request.Request(rem[1] + "/workspace", data=json.dumps({**body, "id": a["id"]}).encode("utf-8"),
+                                 headers={"Content-Type": "application/json", **_auth_headers()})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            st = json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "error": f"{rem[0]['id']} refused: HTTP {e.code} {e.read()[:200].decode('utf-8', 'replace')}"}
+    except Exception as e:
+        return {"ok": False, "error": f"{rem[0]['id']}'s serve did not answer ({e.__class__.__name__})"}
+    sync = {k: bool(body[k]) for k in ("enabled", "write") if k in body}
+    if sync and st.get("ok", True) and not st.get("error"):
+        _adapter_save(a, sync)
+    st["node"] = rem[0]["id"]
+    return st
+
+
+# ---- Home services (D56, 2026-09-26): a program on a fleet box that its OWNER starts and stops from the Control Room ----
+# One file per service in <home>/services/*.json, on the box that runs it. What can run is only what THAT box's own file
+# says: another host (or the authority's Control Room) relays just an id and "start" / "stop", never a command. A service
+# that needs the box's whole GPU ("gpu": true) takes the card out of the pool while it runs (the node's `gpu_hold`): the
+# planner, pooled servers and hand-overs leave it alone, and it will not start while GENGHIS holds a model there unless
+# the owner says to free the card. Started some other way (a terminal)? The beat notices and holds the card anyway;
+# stopped some other way, the beat gives the card back.
+_SVC_CACHE   = {"stamp": None, "services": {}}
+_SVC_LOCK    = threading.Lock()
+_SVC_STARTED = {}          # id -> when this box last started it (the "starting" window)
+_SVC_NOTE    = {}          # id -> the last thing that happened to it, said on its card
+_SVC_DEAD    = {}          # base url -> when a host last failed to list its services (don't wait on it every poll)
+
+
+def services_dir():
+    return os.path.join(home_dir(), "services")
+
+
+def _svc_cmd(v):
+    if isinstance(v, list) and v and all(isinstance(x, str) for x in v):
+        return list(v)
+    if isinstance(v, str) and v.strip():
+        return v.strip()
+    return None
+
+
+def load_services(force=False):
+    """<home>/services/*.json -> {id: service}. Re-read on mtime change, like roles and adapters."""
+    d = services_dir()
+    try:
+        files = sorted(n for n in os.listdir(d) if n.lower().endswith(".json"))
+        stamp = (d, tuple((n, int(os.path.getmtime(os.path.join(d, n)))) for n in files))
+    except OSError:
+        files, stamp = [], (d, ())
+    with _SVC_LOCK:
+        if not force and _SVC_CACHE["stamp"] == stamp:
+            return _SVC_CACHE["services"]
+        out = {}
+        for n in files:
+            p = os.path.join(d, n)
+            try:
+                with open(p, encoding="utf-8") as f:
+                    raw = json.load(f)
+            except Exception as e:
+                print(f"[services] {n}: not loaded -- {e.__class__.__name__}: {e}", flush=True)
+                continue
+            if not isinstance(raw, dict):
+                continue
+            sid = (raw.get("id") or os.path.splitext(n)[0]).strip().lower()
+            if not _ROLE_ID_RE.match(sid):
+                print(f"[services] {n}: not loaded -- bad id '{sid}'", flush=True)
+                continue
+            sv = {"id": sid, "name": str(raw.get("name") or sid.title()), "desc": str(raw.get("desc") or ""),
+                  "glyph": str(raw.get("glyph") or "\u25b6")[:3], "cls": "ember" if raw.get("cls") == "ember" else "steel",
+                  "node": str(raw.get("node") or "").strip(), "gpu": bool(raw.get("gpu")),
+                  "start": _svc_cmd(raw.get("start")), "stop": _svc_cmd(raw.get("stop")),
+                  "probe": str(raw.get("probe") or "").strip(), "open": str(raw.get("open") or "").strip(),
+                  "open_note": str(raw.get("open_note") or ""), "start_s": int(raw.get("start_s") or 120),
+                  "log": str(raw.get("log") or "").strip(), "source": p}
+            if not sv["start"] or not sv["probe"]:
+                print(f"[services] {n}: not loaded -- it needs a 'start' command and a 'probe' address", flush=True)
+                continue
+            out[sid] = sv
+        _SVC_CACHE["stamp"], _SVC_CACHE["services"] = stamp, out
+        return out
+
+
+def _svc_running(sv):
+    """Does the service answer at its probe address? Any HTTP answer (even an error page) means it is up."""
+    # Port first, with a short timeout: on Windows a connection to a port nobody listens on takes ~2 s to be refused,
+    # so two stopped services made the laptop's /services.json take 4 s and the NUC's Control Room showed no cards
+    # (2026-09-28). A local service that is running accepts instantly.
+    u = urllib.parse.urlparse(sv["probe"])
+    try:
+        socket.create_connection((u.hostname, u.port or (443 if u.scheme == "https" else 80)), timeout=0.5).close()
+    except OSError:
+        return False
+    try:
+        with urllib.request.urlopen(sv["probe"], timeout=2):
+            return True
+    except urllib.error.HTTPError:
+        return True
+    except Exception:
+        return False
+
+
+def _svc_node_id(sv):
+    """The fleet node whose GPU the service uses: its file's `node`, else this box."""
+    if sv["node"]:
+        return sv["node"]
+    me = next((d for d in load_fleet().get("donors", []) if is_self_node(d)), None)
+    return me["id"] if me else ""
+
+
+def _svc_busy():
+    """What GENGHIS itself keeps warm on this box right now (model file names)."""
+    return [os.path.basename(e["model"]) for e in _pool_alive().values()]
+
+
+def _svc_spawn(cmd, log=""):
+    """Start a service so it outlives this serve (a deploy restarts the serve; the service keeps running).
+
+    log: a file for its output, opened HERE and handed over as its stdout/stderr. On Windows a `cmd /c ... > file`
+    inside the command writes nothing: a DETACHED process has no console, and cmd's redirect only reaches a child
+    through console inheritance (ComfyUI's card logged 0 bytes, 2026-10-01). Handles passed by Popen always arrive."""
+    out = open(log, "wb") if log else subprocess.DEVNULL
+    kw = {"stdin": subprocess.DEVNULL, "stdout": out, "stderr": subprocess.STDOUT if log else subprocess.DEVNULL,
+          "shell": isinstance(cmd, str)}
+    try:
+        if os.name == "nt":
+            base = 0x00000008 | 0x00000200              # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+            try:
+                subprocess.Popen(cmd, creationflags=base | 0x01000000, **kw)   # + CREATE_BREAKAWAY_FROM_JOB
+            except OSError:
+                subprocess.Popen(cmd, creationflags=base, **kw)            # the job forbids breakaway: still detached
+        else:
+            subprocess.Popen(cmd, start_new_session=True, **kw)
+    finally:
+        if log:
+            out.close()                                 # the child has its own copy of the handle
+
+
+def _svc_run(cmd, timeout=30):
+    kw = {"capture_output": True, "text": True, "timeout": timeout, "shell": isinstance(cmd, str)}
+    if os.name == "nt":
+        kw["creationflags"] = 0x08000000                # CREATE_NO_WINDOW
+    return subprocess.run(cmd, **kw)
+
+
+def gpu_hold_set(node_id, holder):
+    """On the authority: take `node_id`'s GPU out of the pool for `holder` (a home service's name), or give it back
+    (holder None). Taking it also reclaims every pooled shard another host keeps there, like Lend off (D44)."""
+    with _FLEET_LOCK:
+        f = load_fleet()
+        d = next((x for x in f.get("donors", []) if x.get("id") == node_id), None)
+        if not d:
+            return False, f"no active node '{node_id}'"
+        if holder:
+            if d.get("gpu_hold") == holder:
+                return True, f"{node_id}: already held for {holder}"
+            d["gpu_hold"] = holder
+            note = f"{node_id}: GPU held for {holder} -- out of the pool until it stops"
+        else:
+            was = d.pop("gpu_hold", None)
+            if not was:
+                return True, f"{node_id}: not held"
+            note = f"{node_id}: {was} stopped -- the GPU is back in the pool"
+        save_fleet(f)
+        if holder:
+            got = reclaim_card(node_id, f)
+            if got:
+                note += ". Reclaimed: " + "; ".join(got)
+    print(f"[gpu-hold] {note}", flush=True)
+    return True, note
+
+
+def _svc_hold(node_id, holder):
+    """Ask the authority (or be it) to hold / release `node_id`'s GPU for a service."""
+    if SERVE_MODE == "authority":
+        return gpu_hold_set(node_id, holder)
+    body = json.dumps({"action": "gpu-hold" if holder else "gpu-release", "id": node_id, "holder": holder or ""}).encode("utf-8")
+    req = urllib.request.Request(AUTHORITY_BASE + "/fleet", data=body,
+                                 headers={"Content-Type": "application/json", **_auth_headers()})
+    try:
+        with urllib.request.urlopen(req, timeout=90) as r:
+            res = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception as e:
+        return False, f"the authority did not answer ({e.__class__.__name__})"
+    finally:
+        _REMOTE_CACHE.clear()                           # our next fleet read must see the change
+    return bool(res.get("ok")), res.get("note") or ""
+
+
+def service_state_local(sv):
+    """This box's own answer for one service: running / starting / stopped, and what holds its GPU now."""
+    run = _svc_running(sv)
+    t0 = _SVC_STARTED.get(sv["id"])
+    if run:
+        _SVC_STARTED.pop(sv["id"], None)
+    elif t0 and time.time() - t0 >= sv["start_s"]:
+        _SVC_STARTED.pop(sv["id"], None)
+        _SVC_NOTE[sv["id"]] = f"it did not answer within {sv['start_s']} s of starting -- see its own log"
+        t0 = None
+    state = "running" if run else ("starting" if t0 else "stopped")
+    node = _svc_node_id(sv)
+    d = next((x for x in load_fleet().get("donors", []) if x.get("id") == node), None) or {}
+    return {"state": state, "node": node, "gpu_hold": d.get("gpu_hold") or "",
+            "busy": [_tiny_model(m) for m in _svc_busy()] if sv["gpu"] and state == "stopped" else [],
+            "note": _SVC_NOTE.get(sv["id"], "")}
+
+
+def service_action_local(sid, action, free=False):
+    """Start or stop a service that runs on THIS box. free=True: unload what GENGHIS holds on the card first."""
+    sv = load_services().get(sid)
+    if not sv:
+        return {"ok": False, "error": f"no service '{sid}' on this box ({services_dir()})"}
+    node = _svc_node_id(sv)
+    if action == "start":
+        if _svc_running(sv):
+            held = (next((x for x in load_fleet().get("donors", []) if x.get("id") == node), None) or {}).get("gpu_hold")
+            if sv["gpu"] and not held:
+                _svc_hold(node, sv["name"])
+            return {**service_state_local(sv), "ok": True, "note": f"{sv['name']} is already running"}
+        if sid in _SVC_STARTED and time.time() - _SVC_STARTED[sid] < sv["start_s"]:
+            # a second click while it loads launched a second copy (ComfyUI, 2026-09-28): one start at a time
+            return {**service_state_local(sv), "ok": True, "note": f"{sv['name']} is already starting"}
+        if sv["gpu"]:
+            # Another home service already has this card (two GPU services on one 24 GB card both fail): say which.
+            d = next((x for x in load_fleet().get("donors", []) if x.get("id") == node), None) or {}
+            if d.get("gpu_hold") and d["gpu_hold"] != sv["name"]:
+                return {"ok": False, "error": f"{node}'s GPU is in use by {d['gpu_hold']} -- stop it first, then start {sv['name']}"}
+            busy = _svc_busy()
+            if busy and not free:
+                names = ", ".join(_tiny_model(m) for m in busy)
+                return {"ok": False, "need_free": True, "busy": [_tiny_model(m) for m in busy], "node": node,
+                        "error": f"{node}'s GPU is holding {names} for chats"}
+            for m in busy:
+                ok, note = unload_model(m, why=f"freed for {sv['name']} by its owner")
+                if not ok:
+                    return {"ok": False, "error": f"could not unload {_tiny_model(m)}: {note}"}
+            ok, note = _svc_hold(node, sv["name"])
+            if not ok:
+                return {"ok": False, "error": f"could not take {node} out of the pool: {note}"}
+        try:
+            _svc_spawn(sv["start"], sv["log"])
+        except Exception as e:
+            if sv["gpu"]:
+                _svc_hold(node, None)
+            return {"ok": False, "error": f"could not start {sv['name']}: {e}"}
+        _SVC_STARTED[sid] = time.time()
+        note = f"starting {sv['name']}" + (f" -- {node} is out of the pool until it stops" if sv["gpu"] else "")
+        _SVC_NOTE[sid] = note
+        print(f"[services] {note}", flush=True)
+        return {**service_state_local(sv), "ok": True, "note": note}
+    if action == "stop":
+        if not sv["stop"]:
+            return {"ok": False, "error": f"{sv['name']} has no 'stop' command in {os.path.basename(sv['source'])}"}
+        _SVC_STARTED.pop(sid, None)
+        try:
+            r = _svc_run(sv["stop"], timeout=45)
+        except Exception as e:
+            return {"ok": False, "error": f"the stop command failed: {e}"}
+        if r.returncode != 0:                           # its exit code is the word on whether the program is gone
+            tail = (r.stderr or r.stdout or "").strip()[-200:]
+            return {"ok": False, "error": f"the stop command says it did not finish (exit {r.returncode}"
+                                          + (f": {tail}" if tail else "") + f") -- {node} stays out of the pool"}
+        for _ in range(20):
+            if not _svc_running(sv):
+                break
+            time.sleep(1)
+        if _svc_running(sv):
+            return {"ok": False, "error": f"{sv['name']} still answers at {sv['probe']} -- stop it by hand"}
+        note = f"{sv['name']} stopped"
+        if sv["gpu"]:
+            ok, n2 = _svc_hold(node, None)
+            note += f" -- {node} is back in the pool" if ok else f" -- but {node} could NOT be put back in the pool ({n2}); the beat retries"
+        _SVC_NOTE[sid] = note
+        print(f"[services] {note}", flush=True)
+        return {**service_state_local(sv), "ok": True, "note": note}
+    return {"ok": False, "error": "action must be 'start' or 'stop'"}
+
+
+def services_local():
+    """This box's services, as a card sees them (never the commands)."""
+    out = []
+    for sv in load_services().values():
+        pub = {k: sv[k] for k in ("id", "name", "desc", "glyph", "cls", "gpu", "open", "open_note")}
+        out.append({**pub, **service_state_local(sv)})
+    return out
+
+
+def services_view():
+    """Every service in the fleet: this box's own, plus what each other host lists for itself."""
+    out = services_local()
+    seen = set()
+    for d in load_fleet().get("donors", []):
+        if not d.get("local") or is_self_node(d) or not d.get("ip") or d.get("status") == "down":
+            continue
+        base = f"http://{d['ip']}:{int(d.get('serve_port') or 8899)}"
+        if base in seen or time.time() - _SVC_DEAD.get(base, 0) < 15:
+            continue
+        seen.add(base)
+        try:
+            got = _remote_json(base + "/services.json?local=1", ttl=3.0, timeout=6)
+        except Exception:
+            _SVC_DEAD[base] = time.time()
+            continue
+        for e in got.get("services") or []:
+            if isinstance(e, dict):
+                out.append({**e, "via": d["id"]})
+    return {"services": out}
+
+
+def _services_beat():
+    """Keep the pool honest about services started or stopped outside the Control Room."""
+    time.sleep(20)
+    while True:
+        try:
+            for sv in load_services().values():
+                if not sv["gpu"]:
+                    continue
+                node = _svc_node_id(sv)
+                d = next((x for x in load_fleet().get("donors", []) if x.get("id") == node), None)
+                if not d:
+                    continue
+                run = _svc_running(sv)
+                starting = sv["id"] in _SVC_STARTED and time.time() - _SVC_STARTED[sv["id"]] < sv["start_s"]
+                if run and d.get("gpu_hold") and d["gpu_hold"] != sv["name"]:
+                    _SVC_NOTE[sv["id"]] = f"running while {node} is held for {d['gpu_hold']} -- two programs share the GPU; stop one"
+                elif run and not d.get("gpu_hold"):
+                    ok, note = _svc_hold(node, sv["name"])
+                    if ok:
+                        _SVC_NOTE[sv["id"]] = f"found running (started outside the Control Room) -- {node} is held for it"
+                elif not run and not starting and d.get("gpu_hold") == sv["name"]:
+                    ok, note = _svc_hold(node, None)
+                    if ok:
+                        _SVC_NOTE[sv["id"]] = f"stopped outside the Control Room -- {node} is back in the pool"
+        except Exception as e:
+            print(f"[services] beat: {e.__class__.__name__}: {e}", flush=True)
+        time.sleep(15)
+
+
 def _adapter_node(a):
     """Where an adapter's program runs, when that is ANOTHER fleet host: (node, base_url). None when it runs here
     (no `node`, or `node` is this box); ("missing", id) when the file names a node the fleet doesn't know.
@@ -2261,6 +3349,23 @@ def adapter_reachable(a):
     if a["transport"] == "web":
         ok, why = _web_host_ok("html.duckduckgo.com")
         return (True, "the public web answers (DuckDuckGo resolves)") if ok else (False, why)
+    if a["transport"] == "files":                      # D55
+        roots = _files_roots(a)
+        named = a.get("roots") or {}
+        if not roots:
+            return False, f"none of its folders exist on this box ({', '.join(map(str, named.values() if isinstance(named, dict) else named)) or 'no roots listed'})"
+        return True, f"{len(roots)} folder(s): {', '.join(roots)} ({'read-write, with backups' if a.get('write') else 'read-only'})"
+    if a["transport"] == "mcp":                        # D55
+        if not a.get("allow"):
+            return False, "it lists no allowed tools (\"allow\": [...]) -- an MCP adapter offers only the tools it names"
+        try:
+            ops = _mcp_ops(a)
+        except Exception as e:
+            return False, (f"{a['url']} is not answering ({e.__class__.__name__}: {str(e)[:120]}) -- is the program open, "
+                           f"with its MCP server started?")
+        missing = [n for n in a["allow"] if n not in ops]
+        return True, (f"{a['url']} answers: {len(ops)} allowed tool(s)"
+                      + (f"; not offered by the server: {', '.join(missing)}" if missing else ""))
     if a["transport"] != "blender-socket":
         return False, f"unknown transport '{a['transport']}'"
     try:
@@ -2320,10 +3425,10 @@ def adapter_tools(role):
         if not ok:
             notes.append(f"adapter '{aid}' is enabled but unreachable — {detail}")
             continue
-        for op, spec in (a["operations"] or {}).items():
-            if not isinstance(spec, dict) or not (spec.get("code") or a["transport"] == "web"):
+        for op, spec in adapter_ops(a).items():
+            if not isinstance(spec, dict) or not (spec.get("code") or a["transport"] in ("web", "mcp", "files")):
                 continue
-            name = adapter_tool_name(aid, op)
+            name = _tool_safe(adapter_tool_name(aid, op))
             tools.append({"type": "function", "function": {
                 "name": name,
                 "description": spec.get("description") or f"{a['name']}: {op}",
@@ -2344,10 +3449,12 @@ def run_adapter_tool(owned, name, args):
     a = load_adapters().get(aid)
     if not a or not a["enabled"]:
         return json.dumps({"ok": False, "error": f"adapter '{aid}' is not enabled"})
-    spec = (a["operations"] or {}).get(op) or {}
+    spec = (adapter_ops(a) if a["transport"] in ("mcp", "files") else (a["operations"] or {})).get(op) or {}
     code = spec.get("code")
-    if not code and a["transport"] != "web":
+    if not code and a["transport"] not in ("web", "mcp", "files"):
         return json.dumps({"ok": False, "error": f"operation '{op}' has no code"})
+    if a["transport"] in ("mcp", "files") and not spec and not _adapter_node(a):
+        return json.dumps({"ok": False, "error": f"adapter '{aid}' does not allow '{op}'"})
     if not isinstance(args, dict):
         args = {}
     allowed = ((spec.get("parameters") or {}).get("properties") or {})
@@ -2371,6 +3478,10 @@ def run_adapter_tool(owned, name, args):
                                                      f"{e.read()[:300].decode('utf-8', 'replace')}"})
         except Exception as e:
             return json.dumps({"ok": False, "error": f"could not reach {d['id']}'s serve: {e.__class__.__name__}: {e}"})
+    if a["transport"] == "mcp":                        # D55: the server runs it; only allowed tools reach here
+        return mcp_operation(a, op, args)
+    if a["transport"] == "files":                      # D55: built in, fenced to the adapter's roots
+        return files_operation(a, op, args)
     preamble = "".join(f"{k} = {json.dumps(v)}\n" for k, v in args.items())
     try:
         r = _blender_send(a, preamble + code)
@@ -3293,6 +4404,49 @@ def _verify_addresses(auth_base, this_is_authority):
     return out
 
 
+def _verify_launchers():
+    """GENGHIS processes on this box that outlived the launcher meant to restart them and keep their log: [(what, pid)].
+    Seen on the laptop, 2026-10-01: serve-laptop.ps1 and rpc-serve-windows.ps1 had both died days apart; the serve and
+    the donor ran on with no crash restarts and no log, and nothing said so."""
+    found = []
+    try:
+        if os.name == "nt":
+            ps = ("$all = @{}; Get-CimInstance Win32_Process | ForEach-Object { $all[[int]$_.ProcessId] = $_ }; "
+                  "$all.Values | Where-Object { $_.Name -notmatch '^(powershell|pwsh|cmd)' -and "
+                  "$_.CommandLine -match 'genghis_coordinator\\.py\\s+serve|ggml-rpc-server' } | ForEach-Object { "
+                  "$p = $all[[int]$_.ParentProcessId]; "
+                  "$ok = [bool]($p -and $p.CreationDate -le $_.CreationDate); "     # a reused PID is not the parent
+                  "'{0}|{1}|{2}' -f $_.ProcessId, $(if ($_.CommandLine -match 'ggml-rpc-server') { 'donor' } else { 'serve' }), [int]$ok }")
+            out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True,
+                                 timeout=30).stdout
+            for line in out.splitlines():
+                bits = line.strip().split("|")
+                if len(bits) == 3 and bits[2] == "0":
+                    found.append((bits[1], int(bits[0])))
+        elif os.path.isdir("/proc"):
+            for d in os.listdir("/proc"):
+                if not d.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{d}/cmdline", "rb") as f:
+                        cmd = f.read().replace(b"\0", b" ").decode("utf-8", "replace")
+                    if not re.search(r"genghis_coordinator\.py\s+serve|ggml-rpc-server", cmd):
+                        continue
+                    with open(f"/proc/{d}/stat") as f:
+                        ppid = int(f.read().rsplit(")", 1)[1].split()[1])
+                    with open(f"/proc/{ppid}/comm") as f:
+                        parent = f.read().strip()
+                except (OSError, ValueError, IndexError):
+                    continue
+                # serve.sh / donor-serve.sh loop around their child; once the loop dies the child is re-parented to
+                # init (or a user systemd). A shell or tmux parent is someone running it by hand: not flagged.
+                if parent in ("systemd", "init"):
+                    found.append(("donor" if "ggml-rpc-server" in cmd else "serve", int(d)))
+    except Exception:
+        pass
+    return found
+
+
 def verify_cmd(args):
     """`verify [<node-id>] [--bench] [--json]` — is this box (or <node-id>, checked from here) really in the fleet,
     doing what its class should? Read-only. Exit 1 if anything FAILs, so an installer or an agent can gate on it."""
@@ -3439,6 +4593,20 @@ def verify_cmd(args):
         else:
             _vchk(checks, "at boot", "WARN", "nothing starts the donor after a reboot",
                   "re-run install\\install-windows.ps1 -Donor (as administrator for a CPU donor)")
+
+    # 3c · each long-lived GENGHIS process still has the launcher that restarts it and keeps its log
+    if local and not want:
+        lost = _verify_launchers()
+        if lost:
+            win = os.name == "nt"
+            names = {"serve": ("GENGHIS-serve.vbs" if win else "poc/serve.sh"),
+                     "donor": ("GENGHIS-rpc.vbs" if win else "poc/donor-serve.sh")}
+            _vchk(checks, "launcher", "WARN", "running without its launcher: " + ", ".join(f"the {w} (pid {p})" for w, p in lost)
+                  + " -- no restart if it crashes, and nothing reaches its log",
+                  "; ".join(f"stop pid {p} (by PID: " + (f"Stop-Process -Id {p}" if win else f"kill {p}") + ") and start "
+                            + (f"the Startup entry {names[w]}" if win else f"{names[w]} (its @reboot line)") for w, p in lost))
+        else:
+            _vchk(checks, "launcher", "PASS", "the serve and donor here (if any) run under their launchers")
 
     # 4 · built from the pinned llama.cpp commit
     if local:
@@ -3781,8 +4949,13 @@ def adapters_cmd(args):
             tail = detail if ok else f"but UNREACHABLE — {detail}"
         else:
             state, tail = "off    ", "disabled (set \"enabled\": true to arm it)"
-        print(f"  {state} {aid:12.12} {a['transport']:16.16} {a['host']}:{a['port']}  {tail}")
-        print(f"            operations: {', '.join(sorted((a['operations'] or {}).keys())) or '(none)'}")
+        where = a.get("url") if a["transport"] == "mcp" else ("(fenced folders)" if a["transport"] == "files" else f"{a['host']}:{a['port']}")
+        print(f"  {state} {aid:12.12} {a['transport']:16.16} {where}  {tail}")
+        try:
+            ops = sorted(adapter_ops(a).keys()) if (a["enabled"] or a["transport"] != "mcp") else sorted(a.get("allow") or [])
+        except Exception:
+            ops = sorted(a.get("allow") or (a["operations"] or {}).keys())
+        print(f"            operations: {', '.join(ops) or '(none)'}")
     print()
     print("  An adapter is OFF until you arm it. Arming one lets a local model act on this machine.")
 
@@ -4286,11 +5459,37 @@ def _chatml(messages):
 _ANSI      = re.compile(r"\x1b\[[0-9;]*m")                  # ANSI color codes (stripped everywhere)
 
 
+def _v1_ctx(rpc_list, devices, n, prompt):
+    """(ctx, need, fit) for the per-request engine (a split model that is not warm). It used to start with the fixed
+    N_CTX (4096) whatever the request, so every request over ~4k tokens to a split model failed with the engine's raw
+    "request (5806 tokens) exceeds the available context size (4096 tokens)" -- a coding agent's first request is
+    5-9k (2026-09-30). Now sized like a warm server (resident_ctx): a ladder step above the request, within what the
+    model was trained for and what the plan's cards have left for the KV cache. `need` over-counts on purpose
+    (chars/3 + the answer budget)."""
+    need = len(prompt or "") // 3 + int(n or 0) + 64
+    if need <= N_CTX:
+        return N_CTX, need, N_CTX
+    budget = 0.0
+    try:
+        fl = load_fleet()
+        if any(not str(dv).upper().startswith("RPC") for dv in (devices or [])):
+            budget += _local_anchor_free_mb()             # this box's own card holds part of it
+        for ep in rpc_list or []:
+            d = _node_for_endpoint(ep, fl)
+            if d is not None:
+                budget += free_mem_mb(d)
+    except Exception:
+        pass
+    want, fit = resident_ctx(model_path(), budget, need=need)
+    return max(N_CTX, want), need, max(N_CTX, fit)
+
+
 def _v1_args(rpc_list, devices, tensor_split, n, prompt):
     args = [llama_bin("llama-cli"), "-m", ensure_model()]
     if rpc_list:
         args += ["--rpc", ",".join(rpc_list)]
-    args += ["--device", ",".join(devices), "-ngl", "99", "-c", str(N_CTX), "-n", str(n),
+    ctx = _v1_ctx(rpc_list, devices, n, prompt)[0]
+    args += ["--device", ",".join(devices), "-ngl", "99", "-c", str(ctx), "-n", str(n),
              "--single-turn", "--simple-io", "--log-disable", "-p", prompt]
     if tensor_split:
         args += ["--tensor-split", ",".join(f"{w:.4f}" for w in tensor_split)]
@@ -4365,12 +5564,20 @@ def run_llama_capture(rpc_list, devices, tensor_split=None, n=N_PREDICT, prompt=
         return ("", False)
     out = _ANSI.sub("", proc.stdout or "")
     k = out.find(prompt)                                 # everything after the echoed prompt is the answer
+    t = out.find(_V1_TRUNC)
     if k != -1:
         out = out[k + len(prompt):]
+    elif t != -1:
+        # llama-cli echoes only the first 500 bytes of a long prompt, then " ... (truncated)": the answer follows. The
+        # streaming path knew this; this one did not, and handed back the runner's whole screen -- banner and all -- as
+        # the answer. Open WebUI then web-searched for "Loading model... ▄▄ ▄▄" (2026-09-26).
+        out = out[t + len(_V1_TRUNC):]
     else:                                                # fallback: after the last "assistant:" marker
         a = out.rfind(_V1_ANCHOR)
         if a != -1:
             out = out[a + len(_V1_ANCHOR):]
+        else:
+            out = ""                                     # no answer we can find: never return the runner's banner as text
     txt = _v1_trim(out)
     return (txt, bool(txt) and proc.returncode == 0)
 
@@ -4535,7 +5742,7 @@ def engine_error():
     except OSError:
         return ""
     for l in lines:
-        if re.search(r"(error|failed|invalid|cannot|unable)", l, re.I):
+        if re.search(r"\b(error|failed|invalid|cannot|unable)\b", l, re.I):
             return l[:300]
     return ""
 
@@ -4591,6 +5798,32 @@ class _Adopted:
             pass
         self._t = 0.0
     kill = terminate
+    def _alive(self):
+        if not self.pid:
+            return False
+        if platform.system() == "Windows":
+            try:
+                out = subprocess.run(["tasklist", "/FI", f"PID eq {self.pid}", "/NH"], capture_output=True, text=True,
+                                     timeout=5).stdout
+                return str(self.pid) in out
+            except Exception:
+                return False
+        try:
+            os.kill(self.pid, 0)
+            return True
+        except OSError:
+            return False
+    def wait(self, timeout=None):
+        """Until the process is really gone. _stop_entry waits before the next server starts: an adopted server used to
+        have no wait(), so its successor started while it was still hanging up from the card's rpc-server, and that
+        overlap took the rpc-server down (2026-09-26, 15:47 and 17:44 -- both swaps away from an adopted server)."""
+        t0 = time.time()
+        while self._alive():
+            if timeout is not None and time.time() - t0 > timeout:
+                raise subprocess.TimeoutExpired(f"pid {self.pid}", timeout)
+            time.sleep(0.2)
+        self.returncode = self.returncode if self.returncode is not None else 0
+        return self.returncode
     def wait(self, timeout=None):
         end = time.time() + (timeout or 10)
         while time.time() < end and self.poll() is None:
@@ -5042,19 +6275,47 @@ def _mark_chosen(model_file):
     _pool_save()
 
 
-def warm_model(model_id, pooled=False):
+def warm_model(model_id, pooled=False, node=""):
     """Explicitly pre-load a model into VRAM (Control Room 'Warm now'). Only SOLO-on-the-local-anchor models
-    can be kept warm; one too big for a single node (needs pooling) can't. Returns (ok, note)."""
+    can be kept warm; one too big for a single node (needs pooling) can't. Returns (ok, note).
+
+    node: the card the operator chose (a Control Room column, a formation step) -- this host's own card or a card in
+    this box (D46 eGPU). The plan is made for THAT card alone, so the model lands where it was put. Planning for the
+    whole box sent both NUC columns to the faster eGPU over loopback, which this then refused as "too big for this
+    host's card" -- the Arc and the 5060 Ti could not be chosen at all (2026-10-03)."""
     if not residency_enabled():
         return False, "residency is off (GENGHIS_RESIDENCY=0 / config residency:false)"
     idx = registry_index()
     if model_id not in idx:
         return False, f"no model named {model_id}"
+    fleet_all = load_fleet()
+    by_id = {d["id"]: d for d in fleet_all.get("donors", [])}
+    me = next((d for d in fleet_all.get("donors", []) if is_self_node(d)), None)
+    card = by_id.get(node) if node else None
+    if card is not None and not pooled:
+        # already warm on that very card: say so (planning again would see the card as taken -- by this model)
+        e = _pool_alive().get(idx[model_id]["path"])
+        if e is not None and list(e.get("nodes") or []) == [node]:
+            return True, f"{_tiny_model(model_id)} is already warm on {node}"
+    held = card if card is not None else me
+    if held and held.get("gpu_hold") and not pooled:
+        return False, f"{held['id']}'s GPU is in use by {held['gpu_hold']} -- stop it from its Control Room card first"
     set_active_model(idx[model_id]["path"])
-    plan = _plan_for(load_fleet(), load_config().get("default_goal") or active_goal())
+    fleet = fleet_all
+    if card is not None and not pooled:
+        fleet = {**fleet_all, "donors": [card]}         # plan for the chosen card and nothing else
+    plan = _plan_for(fleet, load_config().get("default_goal") or active_goal())
     if not plan:
+        if card is not None and not pooled:
+            need = model_mem_mb() + kv_cache_mb(16384, idx[model_id]["path"]) + 512
+            return False, (f"{_tiny_model(model_id)} does not fit on {node} alone (needs ~{need/1024:.0f} GB, "
+                           f"{node} has ~{best_case_mem_mb(card)/1024:.0f} GB usable)"
+                           + (f" -- {_req_get('last_refusal', '')}" if _req_get("last_refusal", "") else ""))
         return False, (_req_get("last_refusal", "") or "no live donors / model exceeds capacity")
     rpc_list, devices, weights, nodes = plan
+    if card is not None and not pooled and nodes != [node]:
+        return False, f"{_tiny_model(model_id)} could not be planned on {node} alone (the plan wanted {', '.join(nodes)})"
+    same_box_solo = bool(rpc_list) and len(nodes) == 1 and same_box(by_id.get(nodes[0]))   # D46: an eGPU in this box
     if pooled and rpc_list and len(nodes) == 1 and all(str(x).startswith("RPC") for x in (devices or [])):
         # D44 follow-through: "across the fabric" but ONE remote card can hold it whole -- warming it from here would make
         # this host proxy a model living entirely on that card over RPC (9.7 GB of slivers, 2.5 min, every token on the
@@ -5070,7 +6331,7 @@ def warm_model(model_id, pooled=False):
                 return bool(res.get("ok")), f"{_tiny_model(model_id)} fits {nodes[0]} alone -- warmed there on its own card (no network per token): {res.get('note') or ''}"
             except Exception as e:
                 return False, f"{_tiny_model(model_id)} fits {nodes[0]} alone, but its serve did not take the warm: {e}"
-    if (rpc_list or len(nodes) != 1) and pooled:
+    if (rpc_list or len(nodes) != 1) and pooled and not same_box_solo:
         # D39: keep it warm ACROSS the fabric -- the shards stream to the donors once and stay there.
         base = ensure_resident(idx[model_id]["path"], rpc_list, devices, weights, plan_nodes=nodes)
         if base is None:
@@ -5078,7 +6339,7 @@ def warm_model(model_id, pooled=False):
         _mark_chosen(idx[model_id]["path"])
         return True, (f"warmed {_tiny_model(model_id)} across {', '.join(nodes)} -- it stays there until you unload it"
                       + (f" ({last_load_text()})" if last_load_text() else ""))
-    if rpc_list or len(nodes) != 1:
+    if (rpc_list or len(nodes) != 1) and not same_box_solo:
         # Say the REAL reason (D40): too big for THIS host's own card (name the numbers, and where it would fit), or
         # genuinely too big for any single card (pooled on demand). "needs pooling (1 nodes)" told nobody anything.
         need = model_mem_mb() + kv_cache_mb(16384, idx[model_id]["path"]) + 512
@@ -5249,6 +6510,31 @@ def _await_resident(entry, logf, budget):
                     tail = " | ".join(l.strip() for l in f.readlines()[-4:] if l.strip())
             except Exception:
                 pass
+            # An RPC device that is not there makes llama-server reject --device at once ("LLAMA_ARG_DEVICE"): the card's
+            # rpc-server was restarting (its loop brings it back in ~5 s). Wait for it and start the same server ONCE more,
+            # rather than failing the chat for a five-second gap.
+            if (rpc_list and "LLAMA_ARG_DEVICE" in tail and not entry.get("_retried") and entry.get("_args")
+                    and time.time() - (_LOADING.get("started") or time.time()) < 120):
+                entry["_retried"] = True
+                print(f"[resident] {os.path.basename(model_file)}: the RPC device at {', '.join(rpc_list)} was not there "
+                      f"(its rpc-server restarting?) -- waiting for it, then starting once more", flush=True)
+                back = False
+                for _ in range(60):
+                    if all(probe(*ep.rsplit(":", 1), timeout=1.0)[0] for ep in rpc_list):
+                        back = True
+                        break
+                    time.sleep(0.5)
+                if back:
+                    time.sleep(2.0)                      # a listening socket is up a moment before the device is
+                    try:
+                        logf = open(RESIDENT_LOG, "w", encoding="utf-8", errors="replace")
+                        logf.write("$ " + " ".join(entry["_args"]) + "\n"); logf.flush()
+                        proc = subprocess.Popen(entry["_args"], stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+                        entry["proc"] = proc
+                        if owner: _LOADING["started"] = time.time()
+                        continue
+                    except Exception as e:
+                        tail = f"could not start it again: {e}"
             with _POOL_LOCK:
                 _POOL.pop(model_file, None); _pool_save()
             if owner: _LOADING.clear()
@@ -5296,6 +6582,13 @@ def _ensure_resident_locked(model_file, rpc_list, devices, tensor_split, n_ctx=N
                 ctx_budget = sum(free_mem_mb(d) for d in load_fleet().get("donors", []) if d.get("id") in plan_nodes)
             except Exception:
                 pass
+        elif rpc_list and len(rpc_list) == 1:
+            # This box's own second card over loopback (D46), alone: size by THAT card -- all of it, since its one RPC
+            # client is ours and is restarted for this. It used to be sized by the host's own anchor (the NUC's 21 GB Arc)
+            # while the model ran on the 16 GB 5060 Ti.
+            d1 = _node_for_endpoint(rpc_list[0])
+            if d1 is not None and same_box(d1) and d1.get("vram_total_mb"):
+                ctx_budget = float(d1["vram_total_mb"]) * 0.92
         n_ctx, fit = resident_ctx(model_file, ctx_budget, need=need_ctx)
         if need_ctx == 0 and have and cur >= n_ctx:
             n_ctx = cur                                   # never shrink a healthy warm server for nothing
@@ -5319,7 +6612,11 @@ def _ensure_resident_locked(model_file, rpc_list, devices, tensor_split, n_ctx=N
     # D43: unless it is an ESCALATION (the fabric window a long chat needed): keep it while the conversation that
     # comes in still outgrows this card alone (a re-plan every turn would be two loads per message); drop back to
     # solo -- said out loud by the caller -- when a chat arrives that fits here again.
-    if (have and have.get("shards") and have["proc"].poll() is None and _resident_health(have["port"])
+    # ...but never when THIS conversation needs a bigger window than the warm server has: D32's reload went through here and
+    # got the same 16k server back, so a 24k chat on the NUC's eGPU was refused with "the most this GPU holds is 65536"
+    # (2026-09-26). A pooled placement is kept as it is; a conversation that outgrows it still grows it.
+    outgrown = bool(need_ctx) and need_ctx > int((have or {}).get("ctx") or 0)
+    if (have and have.get("shards") and not outgrown and have["proc"].poll() is None and _resident_health(have["port"])
             and (not mmproj or (have.get("sig") or "").endswith(f"mmproj={os.path.basename(mmproj)}"))):   # started without its projector: restart
         if not have.get("escalated"):
             _activate(have)
@@ -5430,7 +6727,7 @@ def _ensure_resident_locked(model_file, rpc_list, devices, tensor_split, n_ctx=N
         return None
     entry = {"proc": proc, "model": model_file, "sig": sig, "port": port, "error": None, "ctx": n_ctx,
              "mb": local_mb, "total_mb": need_mb, "shards": shards, "nodes": list(plan_nodes or []), "escalated": bool(escalated),
-             "last_used": time.time(), "_rpc": list(rpc_list or []), "ready": False, "inflight": 0}
+             "last_used": time.time(), "_rpc": list(rpc_list or []), "ready": False, "inflight": 0, "_args": list(args)}
     _POOL[model_file] = entry
     _activate(entry)
     _pool_save()
@@ -5602,6 +6899,118 @@ class ThinkSplit:
         out = [("think" if self.inside else "say", self.buf)] if self.buf else []
         self.buf = ""
         return out
+
+
+# import name -> the package the browser's Python (pyodide) loads for it. Open WebUI's worker ships micropip, and these come
+# with the distribution. Open WebUI tells the model "nothing can
+# be installed", yet a plain `from PIL import Image` failed with "pillow is included but not installed" (2026-09-26).
+CI_PACKAGES = {"PIL": "pillow", "skimage": "scikit-image", "cv2": "opencv-python", "sklearn": "scikit-learn",
+               "scipy": "scipy", "numpy": "numpy", "pandas": "pandas", "matplotlib": "matplotlib",
+               "openpyxl": "openpyxl", "yaml": "pyyaml", "bs4": "beautifulsoup4", "lxml": "lxml", "sympy": "sympy",
+               "networkx": "networkx", "statsmodels": "statsmodels", "imageio": "imageio", "tifffile": "tifffile"}
+
+
+def ci_wrap(code):
+    """The code a model wrote, made to run and to TELL: the packages its imports need are loaded first, and any error is
+    PRINTED -- Open WebUI hands back only what was printed, never the error, so a crash looked like "printed nothing"
+    and the model reported an upscale of 193 images that never happened (2026-09-26)."""
+    mods = re.findall(r"^\s*from\s+([A-Za-z_]\w*)", code, re.M)
+    for line in re.findall(r"^\s*import\s+(.+)$", code, re.M):          # import a, b as c
+        mods += [part.strip().split(".")[0].split()[0] for part in line.split(",") if part.strip()]
+    pk = sorted({CI_PACKAGES[m] for m in mods if m in CI_PACKAGES})
+    out = []
+    if pk:
+        out += ["try:",
+                "    import micropip as _gh_mp",
+                f"    await _gh_mp.install({pk!r})",
+                "except BaseException as _gh_e:",
+                "    print('could not load ' + ', '.join(" + repr(pk) + ") + ': ' + repr(_gh_e))"]
+    out.append("try:")
+    body = code.strip("\n").splitlines() or ["pass"]
+    out += [("    " + ln) if ln.strip() else "" for ln in body]
+    out += ["except BaseException as _gh_e:",
+            "    import traceback as _gh_tb",
+            "    print('ERROR -- the code above failed:')",
+            "    print(''.join(_gh_tb.format_exception(_gh_e))[-1500:])"]
+    return "\n".join(out)
+
+
+class CIFence:
+    """When the chat's Code Interpreter is on, make the model's FIRST piece of code RUN, then end the turn there -- Open
+    WebUI executes it, sends the output back, and the model explains it on the next turn. On the way:
+
+    - a ```python fence (code models write them by reflex) becomes Open WebUI's tag;
+    - a tag without `type="code"` gets it (Open WebUI runs a block ONLY when type == "code");
+    - the code is held until the block is complete and emitted through ci_wrap(): the packages it imports are loaded
+      first, and an error is printed instead of vanishing.
+    Only the first block runs: Open WebUI runs one block per turn."""
+    OPENERS = ("```python\n", "```py\n", "```python3\n")
+    TAG = '<code_interpreter type="code" lang="python">'
+
+    def __init__(self, on):
+        self.on, self.buf, self.mode, self.closed, self.code = bool(on), "", "text", False, ""
+
+    def _hold(self, text, needles):
+        """Length of the longest tail of `text` that could be the start of one of `needles` (kept back for the next chunk)."""
+        for k in range(min(len(text), max(len(n) for n in needles)), 0, -1):
+            tail = text[-k:]
+            if any(n.startswith(tail) for n in needles):
+                return k
+        return 0
+
+    def _emit_block(self):
+        return self.TAG + "\n" + ci_wrap(self.code) + "\n</code_interpreter>"
+
+    def feed(self, chunk):
+        if not self.on:
+            return chunk
+        if self.closed:
+            return ""
+        self.buf += chunk
+        out = []
+        while True:
+            if self.mode == "text":
+                cands = [(self.buf.find(o), "fence", o) for o in self.OPENERS if self.buf.find(o) != -1]
+                t = self.buf.find("<code_interpreter")
+                if t != -1:
+                    cands.append((t, "tag", None))
+                if cands:
+                    i, kind, o = min(cands)
+                    if kind == "fence":
+                        out.append(self.buf[:i])
+                        self.buf, self.mode, self.end = self.buf[i + len(o):], "code", "\n```"
+                        continue
+                    gt = self.buf.find(">", i)
+                    if gt == -1:                                   # the opening tag is not complete yet
+                        out.append(self.buf[:i]); self.buf = self.buf[i:]
+                        break
+                    out.append(self.buf[:i])
+                    self.buf, self.mode, self.end = self.buf[gt + 1:].lstrip("\n"), "code", "</code_interpreter>"
+                    continue
+                k = self._hold(self.buf, self.OPENERS + ("<code_interpreter",))
+                out.append(self.buf[:len(self.buf) - k]); self.buf = self.buf[len(self.buf) - k:]
+                break
+            i = self.buf.find(self.end)
+            if i != -1:
+                self.code += self.buf[:i]
+                out.append(self._emit_block())
+                self.buf, self.closed = "", True
+                break
+            k = self._hold(self.buf, (self.end,))
+            self.code += self.buf[:len(self.buf) - k]; self.buf = self.buf[len(self.buf) - k:]
+            break
+        return "".join(out)
+
+    def finish(self):
+        if not self.on or self.closed:
+            rest, self.buf = ("" if self.closed else self.buf), ""
+            return rest
+        rest, self.buf = self.buf, ""
+        if self.mode == "code":
+            self.closed = True
+            self.code += rest
+            return self._emit_block()
+        return rest
 
 
 class FenceGuard:
@@ -5839,6 +7248,8 @@ def _delegate_target(name, fleet, model_mb):
             why.append(f"{d['id']}: down"); continue
         if d.get("lend") is False:
             why.append(f"{d['id']}: lend off (owner keeps the GPU)"); continue
+        if d.get("gpu_hold"):
+            why.append(f"{d['id']}: its GPU is running {d['gpu_hold']}"); continue
         base = f"http://{d['ip']}:{int(d.get('serve_port') or 8899)}"
         if name in (d.get("warm") or []) and d.get("status") == "up":     # the beat says it's warm there (D38): no probe
             cands.append((0, -(d.get("tps_ema") or d.get("tokens_per_s_solo") or 0), d["id"], base, True)); continue
@@ -6375,7 +7786,8 @@ def fabric_state(fleet, goal=None):
                            if is_self_node(d) else dict(d.get("pooled") or {})) if up else {}
             n["shard_held_mb"] = int(_shard_held_mb(d)) if up else 0                  # memory parked here by another host's pooled resident
             n["held_mb"] = (int(_pool_held_mb()) if is_self_node(d) else max(0, int(best_case_mem_mb(d) - free_mem_mb(d)))) if up else 0   # what its own warm models take (the Pool bars)
-            n["state"] = "DOWN" if not up else ("PINNED" if d.get("pinned") or _shard_held_mb(d) > 0 else ("IN" if in_plan else ("HELD" if held else ("AWAY" if d.get("away") else ("FOREIGN" if foreign else "IDLE")))))
+            n["gpu_hold"] = d.get("gpu_hold") or ""
+            n["state"] = "DOWN" if not up else ("HELD" if d.get("gpu_hold") else "PINNED" if d.get("pinned") or _shard_held_mb(d) > 0 else ("IN" if in_plan else ("HELD" if held else ("AWAY" if d.get("away") else ("FOREIGN" if foreign else "IDLE")))))
             if up:
                 n["thrput"] = f"{donor_tps(d):.0f} t/s"
                 n["free"] = f"{free_mem_mb(d)/1024:.1f} GB"
@@ -6385,6 +7797,8 @@ def fabric_state(fleet, goal=None):
             elif up and _shard_held_mb(d) > 0:
                 who = ", ".join(f"{k} ({v.get('mb',0)/1024:.1f} GB)" for k, v in (d.get("shard_held") or {}).items())
                 n["why"] = f"holding a shard of a pooled warm model for {who}"
+            elif d.get("gpu_hold") and up:
+                n["why"] = f"GPU in use by {d['gpu_hold']} -- back in the pool when it stops"
             elif held and up:
                 n["why"] = "lend off — the owner keeps this GPU (still a host for its own work)"
             elif d.get("away") and up:
@@ -7245,9 +8659,35 @@ def serve(fleet):
                 self.end_headers()
                 self.wfile.write(body); return
             # The relay (D49): another host asks whether an adapter that runs HERE is switched on and answering.
+            if path == "/services.json":                  # D56: home services (this box's own with ?local=1, else the fleet's)
+                local = (urllib.parse.parse_qs(parsed.query).get("local") or [""])[0] == "1"
+                body = json.dumps({"services": services_local()} if local else services_view()).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body); return
+            if path == "/workspace.json":                 # D55: the Coder's workspace (relayed from the node that has it)
+                wid = (urllib.parse.parse_qs(parsed.query).get("id") or [""])[0].strip().lower() or None
+                body = json.dumps(workspace_state(wid)).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body); return
             if path == "/adapter.json":
-                aid = (urllib.parse.parse_qs(parsed.query).get("id") or [""])[0].strip().lower()
-                body = json.dumps(adapter_local_state(aid)).encode("utf-8")
+                qs = urllib.parse.parse_qs(parsed.query)
+                aid = (qs.get("id") or [""])[0].strip().lower()
+                st = adapter_local_state(aid)
+                if (qs.get("ops") or [""])[0] == "1" and st.get("enabled") and st.get("reachable"):
+                    try:
+                        st["ops"] = {k: {kk: vv for kk, vv in v.items() if kk != "code"}
+                                     for k, v in adapter_ops(load_adapters()[aid]).items()}   # D55: schemas, never code
+                    except Exception as e:
+                        st["ops_error"] = f"{e.__class__.__name__}: {e}"
+                body = json.dumps(st).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Cache-Control", "no-store")
@@ -7492,7 +8932,8 @@ def serve(fleet):
             path = parsed.path
             if _auth_denied(path, "POST", self.headers, urllib.parse.parse_qs(parsed.query)):
                 self.deny(); return
-            if path not in ("/report", "/reply", "/config", "/residency", "/fleet", "/formations", "/v1/chat/completions", "/adapter"):
+            if path not in ("/report", "/reply", "/config", "/residency", "/fleet", "/formations", "/v1/chat/completions", "/adapter",
+                            "/workspace", "/service"):
                 self.send_response(404); self.end_headers(); return
             try:
                 n = int(self.headers.get("Content-Length", 0))
@@ -7527,7 +8968,7 @@ def serve(fleet):
                     code, out = 404, json.dumps({"ok": False, "error": f"adapter '{aid}' does not run on this box"})
                 elif not a["enabled"]:
                     code, out = 403, json.dumps({"ok": False, "error": f"adapter '{aid}' is switched off on this box"})
-                elif op not in (a["operations"] or {}):
+                elif op not in adapter_ops(a):
                     code, out = 404, json.dumps({"ok": False, "error": f"adapter '{aid}' has no operation '{op}'"})
                 else:
                     code = 200
@@ -7535,6 +8976,41 @@ def serve(fleet):
                     print(f"[adapter] {aid}.{op} for {ip}: {out[:160]}", flush=True)
                 body = out.encode("utf-8")
                 self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body); return
+            if path == "/service":
+                # D56: start / stop a home service. From a browser: admin. From another GENGHIS host: the relay of an admin's
+                # click in THAT host's Control Room. Only an id and an action cross; the command is in the running box's file.
+                ip = self.client_address[0]
+                hosts = {"127.0.0.1", "::1"} | {d.get("ip") for d in load_fleet().get("donors", []) if d.get("local") and d.get("ip")}
+                if ip not in hosts and not has_role(self.headers, "admin"):
+                    self.forbid("admin"); return
+                via = str(data.get("via") or "").strip()
+                tgt = next((d for d in load_fleet().get("donors", []) if d.get("id") == via), None) if via else None
+                if tgt is not None and not is_self_node(tgt):
+                    fwd = {k: v for k, v in data.items() if k != "via"}
+                    self.forward("POST", json.dumps(fwd).encode("utf-8"),
+                                 base=f"http://{tgt['ip']}:{int(tgt.get('serve_port') or 8899)}", timeout=150)
+                    return
+                res = service_action_local(str(data.get("id") or "").strip().lower(), str(data.get("action") or "").strip(),
+                                           free=bool(data.get("free")))
+                body = json.dumps(res).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body); return
+            if path == "/workspace":
+                # D55: change the Coder's workspace. From a browser: admin (D25). From another GENGHIS host: the relay of
+                # an admin's change made in THAT host's Control Room; this box validates it against its own folders.
+                ip = self.client_address[0]
+                hosts = {"127.0.0.1", "::1"} | {d.get("ip") for d in load_fleet().get("donors", []) if d.get("local") and d.get("ip")}
+                if ip not in hosts and not has_role(self.headers, "admin"):
+                    self.forbid("admin"); return
+                body = json.dumps(workspace_apply(data if isinstance(data, dict) else {})).encode("utf-8")
+                self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -7556,6 +9032,9 @@ def serve(fleet):
                 act = (data.get("action") or "").strip()
                 if act == "register":
                     ok, note = fleet_ops("register", data.get("node") or {})
+                elif act in ("gpu-hold", "gpu-release"):      # D56: a home service takes / gives back a node's GPU
+                    ok, note = gpu_hold_set((data.get("id") or "").strip(),
+                                            (str(data.get("holder") or "").strip() or "a home service") if act == "gpu-hold" else None)
                 else:
                     ok, note = fleet_ops(act, (data.get("id") or "").strip())
                 result = {"ok": ok, "note": note}
@@ -7565,27 +9044,39 @@ def serve(fleet):
                 # {"action":"unload","model":"<id>"} stops that one warm server, the rest of the pool stays (D38);
                 # {"node":"<id>", ...} = do it on THAT host's card: forwarded to its serve, answer relayed.
                 node = (data.get("node") or "").strip()
+                refused = None
                 if node:
                     tgt = next((d for d in load_fleet().get("donors", []) if d.get("id") == node), None)
                     if tgt is None:
-                        ok = False; result = {"ok": False, "note": f"no node {node} in the fleet"}
-                    elif not is_self_node(tgt):
-                        if not tgt.get("local") or not tgt.get("ip"):
-                            ok = False; result = {"ok": False, "note": f"{node} runs no serve of its own (not a host)"}
+                        refused = f"no node {node} in the fleet"
+                    elif not is_self_node(tgt) and not same_box(tgt):
+                        donors = load_fleet().get("donors", [])
+                        # a card with no serve of its own (an eGPU, D46) is warmed by the host in ITS box: send it there
+                        # and keep the card's name, so that host plans for that card and not its own
+                        host = tgt if (tgt.get("local") and tgt.get("ip")) else next(
+                            (d for d in donors if d is not tgt and d.get("local") and d.get("ip") and d.get("ip") == tgt.get("ip")), None)
+                        if host is None:
+                            refused = f"{node} runs no serve of its own (not a host), and no host shares its box"
                         else:
-                            fwd = {k: v for k, v in data.items() if k != "node"}
+                            # the card's name always travels: the host it reaches plans for THAT card (its own, or the
+                            # eGPU in its box) instead of wherever its planner would put the model
+                            fwd = dict(data)
                             self.forward("POST", json.dumps(fwd).encode("utf-8"),
-                                         base=f"http://{tgt['ip']}:{int(tgt.get('serve_port') or 8899)}", timeout=240)
+                                         base=f"http://{host['ip']}:{int(host.get('serve_port') or 8899)}", timeout=240)
                             return
-                    # else: it's us -- fall through and do it here
+                    # else: it's us, or a card in this box (D46: the NUC's eGPU has no serve; its warm server lives here)
                 act = (data.get("action") or "").strip()
-                if act == "unload" and (data.get("model") or "").strip():
+                if refused:
+                    # a refusal ends here: it used to fall through to a warm planned for the whole box, which then
+                    # answered for the wrong card ("too big for this host's card", 2026-10-03 -- the eGPU column)
+                    ok = False; result = {"ok": False, "note": refused}
+                elif act == "unload" and (data.get("model") or "").strip():
                     ok, note = unload_model(data["model"].strip(), why=(data.get("why") or "unloaded by the operator"))
                     result = {"ok": ok, "note": note, "resident": resident_status()}
                 elif act == "unload":
                     stop_resident(); ok = True; result = {"ok": True, "note": "unloaded", "resident": resident_status()}
                 elif act == "load":
-                    ok, note = warm_model((data.get("model") or "").strip(), pooled=bool(data.get("pooled")))
+                    ok, note = warm_model((data.get("model") or "").strip(), pooled=bool(data.get("pooled")), node=node)
                     result = {"ok": ok, "note": note, "resident": resident_status()}
                 else:
                     ok = False; result = {"ok": False, "note": "action must be 'load' or 'unload'"}
@@ -7640,6 +9131,7 @@ def serve(fleet):
             # silently execute against them.
             self._role_note = self._role_label = None
             self._role_notes = []
+            self._role_rounds = None
             self._role_think = None
             self._role_max = None
             self._owned_tools = {}
@@ -7669,6 +9161,10 @@ def serve(fleet):
                     self._role_max = int(res["role"].get("max_tokens") or 0) or None
                 except (TypeError, ValueError):
                     self._role_max = None
+                try:                                   # D55: a role's own tool-round budget (default 6, at most 24)
+                    self._role_rounds = max(1, min(int(res["role"].get("max_rounds") or 0), 24)) or None
+                except (TypeError, ValueError):
+                    self._role_rounds = None
                 # A DELEGATED request (D34) already carries the role's system prompt — the host that took the
                 # chat applied it before forwarding. Applying it again here would stack a second copy in
                 # front of the conversation. Resolution still runs, so this host picks the right model from
@@ -7681,6 +9177,11 @@ def serve(fleet):
                         self._role_notes = list(res["notes"])     # ...and the person sees them too (Thinking panel)
             # Attached documents become text parts here, on the first host the request reaches -- after the role, so a
             # whole PDF never becomes the knowledge search's query; a delegated request (D34) arrives already converted.
+            try:
+                if ci_handback(data):                      # a Code Interpreter result coming back: said as a turn to answer
+                    print("[ci] a code result came back: restated as a turn to answer", flush=True)
+            except Exception:
+                pass
             try:
                 self._attach_notes = read_attachments(data)
             except Exception as e:
@@ -7743,7 +9244,7 @@ def serve(fleet):
             owned = getattr(self, "_owned_tools", None) or {}
             text  = first_text
             trail = []
-            for _ in range(ADAPTER_MAX_ROUNDS):
+            for _ in range(getattr(self, '_role_rounds', None) or ADAPTER_MAX_ROUNDS):
                 msg = _req_get("proxy_message") or {}
                 calls = msg.get("tool_calls") or []
                 mine = [c for c in calls if ((c.get("function") or {}).get("name")) in owned]
@@ -7769,7 +9270,7 @@ def serve(fleet):
                 _req_set("proxy_reasoning", None); _req_set("proxy_message", None); _req_set("proxy_finish", "stop")
                 with _inflight(base):
                     text, _ok = _proxy_resident(base, data, False)
-            trail.append(f"stopped after {ADAPTER_MAX_ROUNDS} tool rounds — the model kept asking for more")
+            trail.append(f"stopped after {getattr(self, '_role_rounds', None) or ADAPTER_MAX_ROUNDS} tool rounds — the model kept asking for more")
             return text, trail
 
         def _stream_owned_tools(self, base, req, calls, delta, think):
@@ -7781,7 +9282,7 @@ def serve(fleet):
             caller relays them to the client untouched, exactly as D37 did."""
             owned = getattr(self, "_owned_tools", None) or {}
             finish = "tool_calls"
-            for _ in range(ADAPTER_MAX_ROUNDS):
+            for _ in range(getattr(self, '_role_rounds', None) or ADAPTER_MAX_ROUNDS):
                 mine = [c for c in calls if ((c.get("function") or {}).get("name")) in owned]
                 if not calls or not mine or len(mine) != len(calls):
                     return finish, False          # none of ours, or a mix: the client resolves it
@@ -7817,7 +9318,7 @@ def serve(fleet):
                 calls = tool_calls_from(acc)
                 if finish != "tool_calls" or not calls:
                     return finish, True
-            think(f"  stopped after {ADAPTER_MAX_ROUNDS} tool rounds — the model kept asking for more\n")
+            think(f"  stopped after {getattr(self, '_role_rounds', None) or ADAPTER_MAX_ROUNDS} tool rounds — the model kept asking for more\n")
             return "stop", True
 
         def _engine_acquire(self, goal, model_name):
@@ -8257,8 +9758,10 @@ def serve(fleet):
                         req = dict(data); req["stream"] = True
                         finish = "stop"; usage_seen = None
                         _owned = getattr(self, "_owned_tools", None) or {}
+                        _ci_on = has_code_interpreter(data.get("messages"))   # the chat's Code Interpreter is on (plain mode)
                         for attempt in (1, 2):
                             fg = FenceGuard()                              # an unfenced HTML page becomes an Artifact, not a wall of text
+                            cif = CIFence(_ci_on)                          # ...and a ```python block RUNS instead of being shown
                             _acc = {}                                      # D49: streamed tool-call fragments, rebuilt
                             try:
                                 with _inflight(base):
@@ -8266,8 +9769,11 @@ def serve(fleet):
                                     rc = d.get("reasoning_content"); c = d.get("content"); tc = d.get("tool_calls")
                                     if rc: delta(reasoning_content=rc)      # the model's own thinking — was dropped before
                                     if c:
-                                        c = fg.feed(c)
+                                        c = fg.feed(cif.feed(c))
                                         if c: delta(content=c)
+                                        if cif.closed:                      # the block is complete: end the turn so it runs
+                                            finish = "stop"
+                                            break
                                     if tc:
                                         # D49: if this role has armed adapters, a tool call may be OURS to run --
                                         # hold the fragments until the turn ends and we can see the whole call.
@@ -8276,7 +9782,7 @@ def serve(fleet):
                                         else:      delta(tool_calls=tc)
                                     if d.get("_finish"): finish = d["_finish"]
                                     if d.get("_usage"): usage_seen = d["_usage"]
-                                tail = fg.finish()
+                                tail = fg.feed(cif.finish()) + fg.finish()
                                 if tail: delta(content=tail)
                                 if _owned and finish == "tool_calls":
                                     _calls = tool_calls_from(_acc)
@@ -8333,6 +9839,14 @@ def serve(fleet):
                 prompt = _chatml(data.get("messages") or [])
                 sse({**b, "genghis": {"nodes": nodes, "goal": goal, "model_file": name, "resident": False},
                      "choices": [{"index": 0, "finish_reason": None, "delta": {}}]})
+                _ctx, _need, _fit = _v1_ctx(rpc_list, devices, n, prompt)
+                if _need > _ctx:                              # say it in words, before a 20 GB load that would end in the engine's error
+                    delta(content=(f"[genghis] This request is about {_need} tokens, but split across {' + '.join(nodes)} "
+                                   f"{name} can hold at most {_fit} right now -- the other models loaded on those cards are "
+                                   f"using the memory. Unload some in the Control Room, use a smaller model, or send less."))
+                    close(); return
+                if _ctx > N_CTX:
+                    think(f"  context: {_ctx} tokens for this ~{_need}-token request\n")
                 model_mb = model_mem_mb()
                 remote = [x for x in nodes if x != SELF_ID] if rpc_list else []
                 cached = bool(remote) and all(x in _delivered_nodes(name) for x in remote)
@@ -8548,6 +10062,7 @@ def serve(fleet):
                 pass
             time.sleep(60)
     threading.Thread(target=_vram_beat, name="vram-beat", daemon=True).start()
+    threading.Thread(target=_services_beat, name="services-beat", daemon=True).start()   # D56
     # The authority OWNS the fleet record, so it keeps the record's liveness current itself: every minute, measure
     # every node (reachable? round-trip? what does its device hold?) and save just those fields. Browser polls
     # heartbeat without saving -- by design, a read must not rewrite the source of truth -- and the watchdog used to be
@@ -8695,6 +10210,38 @@ def checkins(fleet=None):
         print(f"  {ts}   ->  {ans}" + (f"      ({q})" if q else ""))
 
 
+class _SafeStream:
+    """stdout/stderr that never raise. The serve's output is a pipe to its launcher (serve-laptop.ps1 / serve.sh); when
+    that launcher dies the pipe breaks, and every print() then raised inside a request handler -- which dropped the
+    reply without a word (the laptop's /service, 2026-10-01: ComfyUI started, the caller saw "connection closed").
+    A dead log must never cost a request its answer, so a failed write is dropped instead."""
+
+    def __init__(self, stream):
+        self._s = stream
+
+    def write(self, text):
+        try:
+            return self._s.write(text)
+        except (OSError, ValueError):
+            return len(text)
+
+    def flush(self):
+        try:
+            self._s.flush()
+        except (OSError, ValueError):
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._s, name)
+
+
+def _safe_std_streams():
+    if not isinstance(sys.stdout, _SafeStream):
+        sys.stdout = _SafeStream(sys.stdout)
+    if not isinstance(sys.stderr, _SafeStream):
+        sys.stderr = _SafeStream(sys.stderr)
+
+
 def main():
     global GOAL, MODEL
     ap = argparse.ArgumentParser(description="GENGHIS coordinator (v0.3)")
@@ -8763,6 +10310,7 @@ def main():
     # `serve` IS the authority (reads its local file); every other command is a planning client that
     # fetches the single source of truth from the Pi (falls back to local cache if unreachable).
     if args.action == "serve":
+        _safe_std_streams()                              # a long-lived server outlives its launcher's pipe
         c = _init_opt(args.rest or [], "coord")
         if isinstance(c, str) and c:                     # `serve --coord HOST[:PORT]` = be an inference host of HOST
             global FLEET_URL, _EXPLICIT_COORD

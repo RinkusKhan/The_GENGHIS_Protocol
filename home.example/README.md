@@ -39,6 +39,7 @@ Call a role from any OpenAI-compatible client by name: `genghis-researcher`, `ge
 | `requires` | capabilities the role needs; GENGHIS checks them against the model and **refuses out loud** rather than half-working |
 | `system` / `system_file` | the system prompt, inline or in a neighbouring file |
 | `tools` | the tool belt this role expects. A name that matches an **adapter** in `adapters/` (armed, and reachable) becomes tools GENGHIS runs itself (D49); tools your chat client supplies stay the client's. GENGHIS tells you when a role that needs tools was called with none. |
+| `max_rounds` | *optional* how many tool round-trips one request may take (default 6, at most 24). A coder reads, edits, builds, reads the errors and edits again: give it 12-16. |
 | `knowledge` | a folder of documents the role **reads**: each request is searched and up to 4 cited passages go in front of the question. See [Knowledge](#knowledge) below. |
 | `voice` | a speech service for ears and mouth. **Declared only — not wired yet.** |
 
@@ -86,7 +87,7 @@ file changes.
 
 ## Adapters — tools GENGHIS runs itself (D49, D53)
 
-`adapters/<id>.json` connects a program (Blender, today) to any role whose `tools` names it. The model never writes code:
+`adapters/<id>.json` connects a program (Blender, Visual Studio, your files, the web) to any role whose `tools` names it. The model never writes code:
 it picks one of the file's named **operations** and gives arguments, which GENGHIS binds as plain values.
 
 - **`enabled`** is `false` in the shipped file, on purpose. Switching it on lets a model change that program (in
@@ -98,8 +99,43 @@ it picks one of the file's named **operations** and gives arguments, which GENGH
 - **`web`** (`"transport": "web"`) is built into GENGHIS: `search` and `read_page`, nothing else, on the public
   internet only (a private or local address is refused, at every redirect too). Off as shipped; the stock
   Researcher names it, so switching it on turns that role from a reader into a researcher.
+- **`mcp`** (`"transport": "mcp"`, D55) plugs in any tool server that speaks the Model Context Protocol, such as
+  Visual Studio's ([`visualstudio.json`](adapters/visualstudio.json)): GENGHIS connects to its `url` and offers the model
+  **only the tools the file's `allow` list names**. An MCP adapter with no `allow` offers nothing. A server's other tools
+  never reach the model.
+- **`files`** (`"transport": "files"`, D55) is built in ([`files.json`](adapters/files.json)): list, read, find and search
+  files **only inside the folders its `roots` name**; symlinks and `..` cannot leave them, and key and credential files
+  (`.env`, `*.pem`, `id_rsa`, `.ssh/`) are never opened. `"write": true` adds `write_file` and `replace_text`; every write
+  keeps the previous version under `<root>/.genghis-backup/` and the chat shows the diff. There is no delete.
+  **Workspace mode** (what the Control Room's *Coder workspace* card sets): one `root` you can point anywhere (`D:\Coder`,
+  or `F:\Project` for a quick fix on a USB stick) and a `project` folder inside it; the Coder then sees only that
+  project, and its backups stay inside it, so archiving a project takes its history along. A system drive's root, the
+  OS and program folders, your whole user folder and its AppData, any `.ssh`, and any folder holding GENGHIS's own home
+  are refused as a root.
+- **Keep web and local access in different roles.** A role that can both fetch web pages and reach your files or programs
+  can be steered by a page it reads into sending what it sees out, in the address of the next page it fetches. GENGHIS
+  warns in the chat when a role's belt mixes them.
 - A tool-driving role needs a model that makes **real** tool calls. Some fine-tunes pass the template check but write
   their calls as plain text (BlenderLLM does), so nothing ever happens. `prefer` a general model that calls tools.
+
+## Services — programs you start and stop from the Control Room (D56)
+
+`services/<id>.json` puts a card for one program on the Control Room, with **Start**, **Stop** and **Open**. It lives in
+the home of the box that runs the program; every host's Control Room shows it and passes a click to that box, which runs
+only what its own file says. See [`services/example.json.example`](services/example.json.example); rename it to `.json`
+to use it.
+
+| field | meaning |
+|---|---|
+| `id`, `name`, `desc`, `glyph`, `cls` | the card (`cls`: `steel` or `ember`) |
+| `start` | the command that starts it, as a list of arguments (or one shell string). It may keep running; GENGHIS starts it detached, so it outlives a serve restart |
+| `stop` | the command that stops it. **It must not exit 0 until the program is gone**: an app can close its port and hang in shutdown while still holding its GPU memory. Escalate to a hard kill if you need to; a non-zero exit keeps the card held |
+| `probe` | an address that answers (any HTTP reply) while it runs |
+| `open` | the link behind **Open**; `open_note` is said on the card while it runs |
+| `gpu` | `true` = it needs the box's whole GPU: while it runs, GENGHIS plans nothing onto that card, hands no chat to it, reclaims pooled shards there, and shows it HELD. Start asks before unloading a model GENGHIS keeps warm there |
+| `node` | which fleet node's GPU it uses (default: this box) |
+| `start_s` | how long it may take to answer after starting (default 120 s) |
+| `log` | a file for its output, rewritten at each start. Use this rather than `cmd /c ... > file` on Windows: GENGHIS starts the program detached (no console), and cmd's `>` then reaches the program as nothing (0-byte log) |
 
 ## Not roles
 

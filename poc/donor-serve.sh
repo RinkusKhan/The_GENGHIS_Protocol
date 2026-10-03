@@ -13,6 +13,7 @@
 #   GENGHIS_RPC_PORT   port to serve on            (default 50052)
 #   GENGHIS_RPC_BIN    explicit path to the binary (default: auto-find under common build dirs)
 #   GENGHIS_RPC_LOG    log file                     (default ~/genghis/rpc.log)
+#   GENGHIS_RPC_CACHE_GB  cap on the -c tensor cache (default 30)
 
 PORT="${GENGHIS_RPC_PORT:-50052}"
 LOG="${GENGHIS_RPC_LOG:-$HOME/genghis/rpc.log}"
@@ -57,6 +58,30 @@ fi
 
 port_taken(){ (: > "/dev/tcp/127.0.0.1/$PORT") >/dev/null 2>&1; }
 
+# The -c tensor cache has no limit of its own: ggml-rpc-server keeps every tensor it was ever sent, one file per hash, in
+# ${LLAMA_CACHE:-${XDG_CACHE_HOME:-~/.cache}/llama.cpp}/rpc, and never removes one (the laptop's reached 52 GB in two
+# weeks, 2026-09-30; a Pi's SD card fills sooner). Keep it under GENGHIS_RPC_CACHE_GB, least recently used first (atime;
+# relatime is enough at this granularity), and prune harder while the disk is under 10 % free. A pruned tensor only
+# costs one more LAN transfer the next time that model loads.
+CACHE_GB="${GENGHIS_RPC_CACHE_GB:-30}"
+if [ -n "${LLAMA_CACHE:-}" ]; then CACHE_DIR="${LLAMA_CACHE%/}/rpc"
+else CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/llama.cpp/rpc"; fi
+prune_cache(){
+  [ -d "$CACHE_DIR" ] || return 0
+  local total cap free floor n=0 freed=0 at size f
+  read -r free floor < <(df -Pk "$CACHE_DIR" | awk 'NR==2 {print $4*1024, int($2*1024/10)}')
+  total=$(find "$CACHE_DIR" -maxdepth 1 -type f -printf '%s\n' 2>/dev/null | awk '{s+=$1} END {print s+0}')
+  cap=$(awk -v g="$CACHE_GB" 'BEGIN {printf "%.0f", g*1024*1024*1024}')
+  while read -r at size f; do
+    [ "$total" -le "$cap" ] && [ "$free" -ge "$floor" ] && break
+    rm -f -- "$f" && { total=$((total - size)); free=$((free + size)); freed=$((freed + size)); n=$((n + 1)); }
+  done < <(find "$CACHE_DIR" -maxdepth 1 -type f -printf '%A@ %s %p\n' 2>/dev/null | sort -n)
+  [ "$n" -gt 0 ] && echo "[$(date '+%F %T')] rpc cache: removed $n least-used tensor files ($((freed / 1048576)) MB); now $((total / 1048576)) MB (cap ${CACHE_GB} GB)" >> "$LOG"
+  return 0
+}
+# a long-lived server keeps adding tensors: prune every 10 minutes too, not only at (re)start
+( while sleep 600; do prune_cache; done ) &
+
 echo "[$(date '+%F %T')] donor-serve: $BIN  -H 0.0.0.0 -p $PORT -c ${DEVARGS[*]}  (device=$DEV)" >> "$LOG"
 # -c enables the RPC server's local cache. Restart loop: survives crashes; @reboot cron survives reboots.
 warned=0
@@ -70,6 +95,7 @@ while true; do
     warned=$((warned + 1)); sleep 30; continue
   fi
   warned=0
+  prune_cache
   "$BIN" -H 0.0.0.0 -p "$PORT" -c "${DEVARGS[@]}" >> "$LOG" 2>&1
   echo "[$(date '+%F %T')] rpc-server exited — restarting in 5s" >> "$LOG"
   sleep 5

@@ -49,6 +49,18 @@ PROV_VERSION = 3         # a row stamped meta.genghis_provisioned == this is the
 WATCHED = ("capabilities.builtin_tools", "toolIds", "function_calling")   # D47: the fields an upgrade must not silently move
 PROMPT_MARK = "You run on the user's own GENGHIS fleet."
 TOOLS_DEFAULT = ["genghis_fleet", "weather_open_meteo", "wikipedia_tool"]   # only those actually installed are kept
+ROLE_FEATURES = ["code_interpreter"]   # a role (genghis-coder, -researcher, ...) opens with the Code Interpreter on: the model
+                                       # writes Python, the chat runs it in the browser on the files in its Files panel. Plain
+                                       # (non-native) calling, because in native mode the interpreter is one of Open WebUI's
+                                       # builtin tools, which stay OFF (they flood a local model) -- so it never arrived.
+# The Code Interpreter runs Pyodide from Open WebUI's OWN copy (/app/build/pyodide): its package list names ~250 packages,
+# but the image ships the files of only ~50. GENGHIS tells the model it can use OpenCV and scikit-image (CI_HOWTO); in the
+# first real photo repair (2026-09-28) `import cv2` failed with "Failed to fetch" and the model fell back to Pillow. So the
+# promised packages, and what they depend on, are fetched from Pyodide's CDN for exactly this build, checked against the
+# sha256 in its own package list, and put where the browser looks. Re-run by the watchdog: a recreated container heals.
+PYODIDE_DIR = "/app/build/pyodide"
+PYODIDE_EXTRAS = ["opencv-python", "scikit-image"]
+PYODIDE_CDN = "https://cdn.jsdelivr.net/pyodide/v{version}/full/{file}"
 CAPS_DEFAULT = {"file_context": True, "vision": False, "file_upload": True, "web_search": True, "image_generation": False,
                 "code_interpreter": True, "citations": True, "status_updates": True, "builtin_tools": False}
 
@@ -91,6 +103,44 @@ def _set(p, m, field, value):
         caps = dict(m.get("capabilities") or {}); caps[field.split(".", 1)[1]] = value; m["capabilities"] = caps
 
 
+def pyodide_extras(dry_run=False):
+    """Fetch the Code Interpreter packages GENGHIS promises (PYODIDE_EXTRAS + their dependencies) that Open WebUI's
+    Pyodide lists but does not ship. Returns (fetched, failed) as lists of lines; nothing to do = two empty lists."""
+    import hashlib, urllib.request
+    lock_p, pkg_p = os.path.join(PYODIDE_DIR, "pyodide-lock.json"), os.path.join(PYODIDE_DIR, "package.json")
+    if not (os.path.exists(lock_p) and os.path.exists(pkg_p)):
+        return [], []                                  # not inside the Open WebUI container (a --db run): nothing to do
+    lock = json.load(open(lock_p, encoding="utf-8"))["packages"]
+    version = json.load(open(pkg_p, encoding="utf-8"))["version"]
+    norm = lambda n: n.lower().replace("_", "-").replace(".", "-")   # `depends` says lazy_loader, the key is lazy-loader
+    keys = {norm(k): k for k in lock}
+    need, stack = [], list(PYODIDE_EXTRAS)
+    while stack:
+        k = keys.get(norm(stack.pop()))
+        if not k or k in need:
+            continue
+        need.append(k); stack += lock[k].get("depends") or []
+    fetched, failed = [], []
+    for k in sorted(need):
+        f = lock[k]["file_name"]; dst = os.path.join(PYODIDE_DIR, f)
+        if os.path.exists(dst):
+            continue
+        if dry_run:
+            fetched.append(f"would fetch {k} ({f})"); continue
+        try:
+            with urllib.request.urlopen(PYODIDE_CDN.format(version=version, file=f), timeout=120) as r:
+                data = r.read()
+            if hashlib.sha256(data).hexdigest() != lock[k].get("sha256"):
+                failed.append(f"{k}: the download did not match Pyodide's checksum -- not installed"); continue
+            with open(dst + ".tmp", "wb") as out:
+                out.write(data)
+            os.replace(dst + ".tmp", dst)
+            fetched.append(f"Code Interpreter package {k} ({len(data) // 1024} KB)")
+        except Exception as e:
+            failed.append(f"{k}: could not fetch ({e.__class__.__name__}: {e}) -- the model can't import it until this works")
+    return fetched, failed
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default="/app/backend/data/webui.db")
@@ -105,6 +155,11 @@ def main():
     prompt_path = a.prompt or next((p for p in (os.path.join(os.path.dirname(os.path.abspath(__file__)), "system_prompt.txt"),
                                                  "/tmp/system_prompt.txt") if os.path.exists(p)), None)
     system = open(prompt_path, encoding="utf-8").read().strip() if prompt_path else ""
+    got, bad = pyodide_extras(a.dry_run)
+    for line in got:
+        print(("" if a.dry_run else "fetched: ") + line)
+    for line in bad:
+        print("PROBLEM:", line)                        # said even under --quiet: a promised package is missing
     if not system:
         say("warning: system_prompt.txt not found -- models keep their current system prompt")
     if not os.path.exists(a.db):
@@ -143,7 +198,10 @@ def main():
                 for m in (json.loads(r.read().decode("utf-8")).get("data") or []):
                     g = m.get("genghis") or {}
                     if not g or not m.get("id"):
-                        continue                                   # only GENGHIS's own file entries carry `genghis`
+                        continue                                   # only GENGHIS's own entries carry `genghis`
+                    if g.get("kind") == "role":                    # a role acts through GENGHIS's own tools (run server-side)
+                        targets[m["id"]] = {"tools": False, "native": False, "role": True}   # and the Code Interpreter
+                        continue
                     big = (g.get("size_mb") or 0) >= SMALL_MB
                     targets[m["id"]] = {"tools": big, "native": big}
         except Exception as e:
@@ -197,6 +255,14 @@ def main():
             want_m["toolIds"] = tools if t["tools"] else []
             if t["native"]:
                 want_p["function_calling"] = "native"
+            if t.get("role"):
+                want_p["function_calling"] = "legacy"           # plain mode, NAMED: in Open WebUI 0.11 an unset value means native,
+                                                                # where the interpreter is a builtin tool (off) -- it vanished
+                caps["code_interpreter"] = True
+                caps["web_search"] = False                     # no Open WebUI search in front of a role: it slowed every
+                want_m["capabilities"] = caps                  # Coder answer with 9 irrelevant pages (2026-09-26); the
+                                                               # Researcher searches through GENGHIS's own web adapter
+                want_m["defaultFeatureIds"] = list(ROLE_FEATURES)
         if system and (not upgrade or (p.get("system") or "").startswith(PROMPT_MARK)):
             want_p["system"] = system                  # ours before -> ours now; a user's own prompt is never replaced
         want_m["genghis_applied"] = {f: _get(want_p, want_m, f) for f in WATCHED}   # D47: what GENGHIS wrote, to compare against

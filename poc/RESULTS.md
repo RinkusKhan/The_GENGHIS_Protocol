@@ -377,4 +377,4 @@ multi-node pipeline that cost is paid at every node. On a *good* Wi-Fi moment; t
 measured 146–306 ms, where it stops being a percentage and becomes the whole story (D41).
 
 ---
-_Generated from the project's private results ledger on 2026-09-25._
+_Generated from the project's private results ledger on 2026-10-03._

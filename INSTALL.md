@@ -157,6 +157,8 @@ python3 genghis_coordinator.py register --coord <authority-ip> --port 50053 --id
 Three things that will bite you, all learned the hard way:
 - **Pin the binary and the device in every `@reboot` line.** `donor-serve.sh` auto-finds a `ggml-rpc-server` when
   `GENGHIS_RPC_BIN` is unset — with two builds present it can pick the wrong one after a reboot and serve the wrong card.
+  (Every donor launcher also keeps the server's `-c` tensor cache under **30 GB**, least recently used first;
+  `GENGHIS_RPC_CACHE_GB` changes the cap. The cache is shared by all donors on a box.)
 - **Give the second card its own host label** (`<box>-egpu`). A node is judged "this box" by *hostname*; if the second
   card shares the host's name, the host's own serve will treat it as its local anchor instead of dialling it over RPC.
 - **It is local-class, and that is the point.** GENGHIS knows a donor on the same box has no wire (D46): it can be the

@@ -17,7 +17,8 @@ param(
   [string]$Device = "",
   [string]$BindHost = "0.0.0.0",
   [string]$Python = "",               # the installer's Python: register this port with the authority once the server is up
-  [string]$Coord = ""                 # the authority (host[:port]); a boot-time task runs as SYSTEM and cannot see the user's GENGHIS_COORD
+  [string]$Coord = "",                # the authority (host[:port]); a boot-time task runs as SYSTEM and cannot see the user's GENGHIS_COORD
+  [double]$CacheGB = 0                # cap on the -c tensor cache (default: $env:GENGHIS_RPC_CACHE_GB, else 30)
 )
 $ErrorActionPreference = 'Continue'   # not SilentlyContinue: that would drop the server's stderr from the log (PS 5.1)
 $here = $PSScriptRoot
@@ -41,6 +42,35 @@ function Find-Rpc {
     if (Test-Path $exe) { return @($exe, $b) }
   }
   return $null
+}
+
+# --- The -c tensor cache has no limit of its own --------------------------------------------------------------------
+# ggml-rpc-server keeps every tensor it was ever sent, one file per hash, in <LLAMA_CACHE or %LOCALAPPDATA%\llama.cpp>\rpc.
+# Nothing ever removed one: on the laptop it reached 52 GB in two weeks and filled C: (2026-09-30). Keep it under a cap,
+# least recently USED first (NTFS last-access time), and prune harder while the disk is under 10 % free. A file the
+# server has open just fails to delete and is skipped; a pruned tensor only costs one more LAN transfer next load.
+if ($CacheGB -le 0) { $CacheGB = if ($env:GENGHIS_RPC_CACHE_GB) { [double]$env:GENGHIS_RPC_CACHE_GB } else { 30 } }
+function Limit-RpcCache {
+  try {
+    $root = if ($env:LLAMA_CACHE) { $env:LLAMA_CACHE } else { Join-Path $env:LOCALAPPDATA 'llama.cpp' }
+    $dir = Join-Path $root 'rpc'
+    if (-not (Test-Path -LiteralPath $dir)) { return }
+    $files = @(Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue | Sort-Object LastAccessTime)
+    $total = [double](($files | Measure-Object Length -Sum).Sum)
+    $disk = New-Object System.IO.DriveInfo ([System.IO.Path]::GetPathRoot((Resolve-Path -LiteralPath $dir).Path))
+    $free = [double]$disk.AvailableFreeSpace; $floor = 0.10 * $disk.TotalSize
+    $cap = $CacheGB * 1GB; $n = 0; $freed = 0.0
+    foreach ($f in $files) {
+      if ($total -le $cap -and $free -ge $floor) { break }
+      try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop; $total -= $f.Length; $free += $f.Length; $freed += $f.Length; $n++ } catch {}
+    }
+    if ($n) {
+      "[{0}] rpc cache: removed {1} least-used tensor files ({2:N1} GB); now {3:N1} GB (cap {4} GB, {5:N0} GB free on {6})" -f `
+        (Get-Date -Format o), $n, ($freed / 1GB), ($total / 1GB), $CacheGB, ($free / 1GB), $disk.Name | Out-File -Append $log -Encoding utf8
+    }
+  } catch {
+    "[{0}] rpc cache: could not prune ({1})" -f (Get-Date -Format o), $_.Exception.Message | Out-File -Append $log -Encoding utf8
+  }
 }
 
 # --- D35: lending my GPU keeps the box awake (screen still sleeps) -------------------------------------------
@@ -108,6 +138,7 @@ while ($true) {
     continue
   }
   $exe, $build = $found
+  Limit-RpcCache
   $dev = $Device
   if (-not $dev) { $dev = switch ($build) { 'build-cuda' { 'CUDA0' } 'build-vulkan' { 'Vulkan0' } default { 'CPU' } } }
   # -c = local tensor cache (same as donor-serve.sh): the FIRST load of a model streams its weights over the LAN,
@@ -127,8 +158,10 @@ while ($true) {
     $reg = & $Python @regArgs 2>&1 | ForEach-Object { "$_" }
     "[{0}] register --port {1}: {2}" -f (Get-Date -Format o), $Port, (($reg -join ' ').Trim()) | Out-File -Append $log -Encoding utf8
   }
+  $tick = 0
   while (-not $p.HasExited) {
     Set-Awake ((Get-OnAC) -and (Get-Lending))
+    if ((++$tick % 10) -eq 0) { Limit-RpcCache }       # every 10 minutes: a long-lived server keeps adding tensors
     Start-Sleep -Seconds 60
     $p.Refresh()
   }

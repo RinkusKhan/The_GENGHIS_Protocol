@@ -17,7 +17,7 @@ if [ -z "$COORD" ]; then
   # no address given: ask the LAN (mDNS) once, via the coordinator's own discovery helper if it sits next to us
   HERE="$(cd "$(dirname "$0")" && pwd)"
   if [ -f "$HERE/genghis_mdns.py" ] && command -v python3 >/dev/null 2>&1; then
-    COORD=$(python3 "$HERE/genghis_mdns.py" 2>/dev/null | sed -n 's#^http://\([^/]*\)/fleet.json$##p' | head -1)
+    COORD=$(python3 "$HERE/genghis_mdns.py" 2>/dev/null | sed -n 's#^http://\([^/]*\)/fleet.json$#\1#p' | head -1)
   fi
   [ -n "$COORD" ] || { echo "donor-report: set GENGHIS_COORD=host:port (no coordinator found on the LAN)"; exit 2; }
 fi

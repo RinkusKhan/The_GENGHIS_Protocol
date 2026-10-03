@@ -4429,9 +4429,18 @@ def _verify_launchers():
                     continue
                 try:
                     with open(f"/proc/{d}/cmdline", "rb") as f:
-                        cmd = f.read().replace(b"\0", b" ").decode("utf-8", "replace")
-                    if not re.search(r"genghis_coordinator\.py\s+serve|ggml-rpc-server", cmd):
+                        argv = [a.decode("utf-8", "replace") for a in f.read().split(b"\0") if a]
+                    if not argv:
                         continue
+                    # judge the PROGRAM, not any command line that mentions it: a launcher's `sh -c "GENGHIS_RPC_BIN=
+                    # .../ggml-rpc-server ... donor-serve.sh"` wrapper names the binary too (a false WARN, 2026-10-03)
+                    prog = os.path.basename(argv[0])
+                    is_donor = prog == "ggml-rpc-server"
+                    is_serve = prog.startswith("python") and any(a.endswith("genghis_coordinator.py") for a in argv) \
+                        and "serve" in argv
+                    if not (is_donor or is_serve):
+                        continue
+                    cmd = " ".join(argv)
                     with open(f"/proc/{d}/stat") as f:
                         ppid = int(f.read().rsplit(")", 1)[1].split()[1])
                     with open(f"/proc/{ppid}/comm") as f:
@@ -6296,7 +6305,12 @@ def warm_model(model_id, pooled=False, node=""):
         # already warm on that very card: say so (planning again would see the card as taken -- by this model)
         e = _pool_alive().get(idx[model_id]["path"])
         if e is not None and list(e.get("nodes") or []) == [node]:
-            return True, f"{_tiny_model(model_id)} is already warm on {node}"
+            if _resident_health(e.get("port"), timeout=3.0):
+                return True, f"{_tiny_model(model_id)} is already warm on {node}"
+            # its server no longer answers (seen when the card's donor restarted under it): drop it and warm afresh --
+            # left in the pool it would hold the card's endpoint and the plan below would refuse the card
+            with _POOL_LOCK:
+                _stop_entry(e, "its server stopped answering -- warming it again")
     held = card if card is not None else me
     if held and held.get("gpu_hold") and not pooled:
         return False, f"{held['id']}'s GPU is in use by {held['gpu_hold']} -- stop it from its Control Room card first"

@@ -11,6 +11,10 @@ STATUS.md. Newest first. Dates are the day the change landed on `main`._
   overwritten by that whole-box answer. A warm is now planned for the card that was chosen, an eGPU (no serve of its own)
   is handled by the host in its box (from any host's Control Room), the card's name travels on every forward, and asking
   for a model that is already warm there says so.
+- **Fix: a warm model whose card's donor restarted stayed "already warm" while its server was dead.** A warm request now
+  checks the server answers; a dead one is dropped and the model is warmed afresh.
+- **Fix: `verify`'s `launcher` check warned about a healthy Linux donor** after it was restarted from its `@reboot` line:
+  it matched the `sh -c` wrapper, whose command line names `ggml-rpc-server`. It now judges the program that runs.
 - **Roles are labelled experimental** in the README and USAGE: the fleet-pooling core is the proven part.
 - **Fix: three scripts damaged by escape mangling.** `donor-report.sh`'s mDNS fallback had a raw 0x01 byte where `sed`'s
   `\1` belonged (a donor without `GENGHIS_COORD` never found the authority); `run-client.ps1` did not parse in Windows

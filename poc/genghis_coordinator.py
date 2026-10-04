@@ -202,6 +202,8 @@ SERVE_MODE = "authority"          # "authority" | "host"; set by decide_serve_mo
 AUTHORITY_BASE = None             # "http://<authority>:8899" in host mode
 _REMOTE_CACHE = {}                # url -> (fetched_at, data): a host asks the authority at most every few seconds
 _LOCAL_HOST_KEYS = ("residency", "resident_ctx", "resident_kv", "models_dirs", "auth")   # per-box config; never taken from the authority
+_HOST_OWN_KEYS = ("residency", "resident_ctx", "resident_kv", "models_dirs")   # ...and SET on the host itself (auth stays
+                                                                                # with the authority: one PIN for the fleet)
 # ONE /v1 run at a time per serve process. The planner works off process-globals (GOAL, MODEL) that each request
 # sets for itself; two concurrent requests (a chat + Open WebUI's title call) clobbered each other and the title
 # call ran the 32B. Until per-request state is threaded through the planner, requests plan-and-run under this lock
@@ -522,7 +524,7 @@ def _fleet_ops(action, node_id):
             return False, "register needs a node dict with an id"
         nid = node["id"]; host = (node.get("host") or "").lower()
         named = bool(node.pop("named", False))       # the person CHOSE this name (`--name` / `init --node-name`)
-        keep = ("tps_ema", "tokens_per_s_solo", "reliability", "last_seen", "notes", "added")
+        keep = ("tps_ema", "tokens_per_s_solo", "bw_gbs", "reliability", "last_seen", "notes", "added")
         # Find this box's record: the same id first, else the same hostname (a box re-registering). A hostname is weak
         # identity ("ubuntu" is every fresh Ubuntu Server's), so what happens next depends on two checks below.
         existing = src = None
@@ -855,10 +857,11 @@ _GGUF_SCALAR = {0:("B",1), 1:("b",1), 2:("H",2), 3:("h",2), 4:("I",4), 5:("i",4)
 _GGUF_CACHE = {}   # path -> (n_layers, kv_dim) | None  (parse once per model)
 
 
-def _gguf_scalar_meta(path, prefix_mb=32):
+def _gguf_scalar_meta(path, prefix_mb=32, want_tensors=False):
     """Parse a GGUF header's metadata and return {key: value} for all SCALAR (non-array) keys.
     Reads only a prefix of the file — metadata lives at the top; the big tokenizer ARRAYs are
-    walked (skipped) in-memory. Returns {} on any parse failure (caller falls back to heuristic)."""
+    walked (skipped) in-memory. Returns {} on any parse failure (caller falls back to heuristic).
+    want_tensors: also walk the tensor table and return (meta, [(name, offset)], data_start) (D58)."""
     import struct
     with open(path, "rb") as f:
         buf = f.read(prefix_mb * 1024 * 1024)
@@ -868,7 +871,7 @@ def _gguf_scalar_meta(path, prefix_mb=32):
     (ver,) = struct.unpack_from("<I", buf, off); off += 4
     if ver < 2:                                   # v1 used uint32 counts; we only support v2/v3
         raise ValueError(f"unsupported GGUF version {ver}")
-    off += 8                                       # n_tensors (uint64) — skip
+    (n_tensors,) = struct.unpack_from("<Q", buf, off); off += 8
     (n_kv,) = struct.unpack_from("<Q", buf, off); off += 8
 
     def rd_str():
@@ -903,7 +906,55 @@ def _gguf_scalar_meta(path, prefix_mb=32):
             meta[key] = rd_str()
         else:
             skip(vtype)                            # arrays (tokenizer vocab, etc.) — not needed
-    return meta
+    if not want_tensors:
+        return meta
+    infos = []                                     # the tensor table follows the metadata: name, dims, type, offset
+    for _ in range(n_tensors):
+        name = rd_str()
+        (nd,) = struct.unpack_from("<I", buf, off); off += 4 + 8 * nd + 4     # n_dims, the dims, the ggml type
+        (toff,) = struct.unpack_from("<Q", buf, off); off += 8
+        infos.append((name, toff))
+    align = int(meta.get("general.alignment", 32) or 32)
+    return meta, infos, (off + align - 1) // align * align
+
+
+_BPT_CACHE = {}
+
+def gguf_bytes_per_token(path):
+    """D58: the bytes a card reads from its memory to generate ONE token with this model. Generation is bound by memory
+    speed, so tokens/s x this = the card's effective GB/s, a figure that does not depend on which model ran. Every weight
+    is read per token except the input embedding (a row lookup; unless it doubles as the output head), and a
+    mixture-of-experts model reads only `expert_used_count` of its `expert_count` experts. From the GGUF's own tensor
+    table; the file size when that cannot be read. Cached per file."""
+    if path in _BPT_CACHE:
+        return _BPT_CACHE[path]
+    res = None
+    try:
+        total = os.path.getsize(path)
+        meta, infos, start = _gguf_scalar_meta(path, want_tensors=True)
+        arch = meta.get("general.architecture", "")
+        n_exp = int(meta.get(f"{arch}.expert_count") or 0)
+        n_used = int(meta.get(f"{arch}.expert_used_count") or 0)
+        infos.sort(key=lambda t: t[1])
+        names = {n for n, _ in infos}
+        bpt = 0.0
+        for i, (n, o) in enumerate(infos):
+            size = (infos[i + 1][1] if i + 1 < len(infos) else total - start) - o
+            if n == "token_embd.weight" and "output.weight" in names:
+                continue
+            if "_exps." in n and n_exp and n_used:
+                size = size * n_used / n_exp
+            bpt += size
+        res = bpt if bpt > 0 else None
+    except Exception:
+        res = None
+    if res is None:
+        try:
+            res = float(os.path.getsize(path))
+        except OSError:
+            res = None
+    _BPT_CACHE[path] = res
+    return res
 
 
 def gguf_arch_params(path=None):
@@ -4975,6 +5026,7 @@ def fleet_cmd(args):
        `fleet restore <id>`         — bring a retired node back
        `fleet remove <id>`          — hard-delete a node (and its config names/roles)
        `fleet lend off|on [id]`     — keep this box's GPU for yourself / give it back (D35; default id = this box)
+       `fleet bench [id]`           — measure every GPU's effective GB/s (or one card's) -- what hand-overs compare (D58)
        `register [--coord HOST]`    — announce THIS box to the authority (D33; `init --coord` does it for you)
     Sends the change to the coordinator (the authority) so it persists fleet-wide (D26)."""
     rest = args.rest or []
@@ -4983,7 +5035,8 @@ def fleet_cmd(args):
         f = load_fleet()
         print("== active donors ==")
         for d in f.get("donors", []):
-            print(f"  {d.get('id',''):16} {d.get('accelerator','?'):8} {d.get('status','?')}")
+            bw = f"~{card_bw(d):.0f} GB/s" if card_bw(d) else ""
+            print(f"  {d.get('id',''):16} {d.get('accelerator','?'):8} {d.get('status','?'):6} {bw}")
         ret = f.get("_retired_donors", [])
         if ret:
             print("== retired (restore with `fleet restore <id>`) ==")
@@ -5015,7 +5068,29 @@ def fleet_cmd(args):
         except Exception as e:
             sys.exit(f"  failed to reach the coordinator at {url}: {e}")
         return
-    sys.exit("usage: fleet [list | retire <id> | restore <id> | remove <id> | lend on|off [id]]")
+    if sub == "bench":
+        # D58: every GPU card (or the one named), measured by the box it lives in (the authority forwards each one,
+        # keeping the card's name, D57). A card that is warm is measured with what it holds; nothing is pushed out.
+        f = load_fleet()
+        ids = [rest[1]] if len(rest) >= 2 else [d["id"] for d in f.get("donors", [])
+                                                 if d.get("status") == "up" and (d.get("accelerator") or "") in ("cuda", "vulkan", "metal", "rocm")]
+        url = FLEET_URL.rsplit("/", 1)[0] + "/residency"
+        print(f"== measuring {len(ids)} card(s): each warms a model if it has none, generates ~160 tokens, unloads ==")
+        for nid in ids:
+            print(f"  {nid:16} ... ", end="", flush=True)
+            req = urllib.request.Request(url, data=json.dumps({"action": "bench", "node": nid}).encode("utf-8"),
+                                         headers={**_auth_headers(), "Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=1500) as r:
+                    res = json.loads(r.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                try: res = json.loads(e.read().decode("utf-8"))
+                except Exception: res = {"ok": False, "note": f"HTTP {e.code}"}
+            except Exception as e:
+                res = {"ok": False, "note": str(e)}
+            print(("" if res.get("ok") else "FAILED: ") + str(res.get("note", "")))
+        return
+    sys.exit("usage: fleet [list | retire <id> | restore <id> | remove <id> | lend on|off [id] | bench [id]]")
 
 
 def models_cmd(fleet):
@@ -5132,6 +5207,60 @@ def observe_tps(d, measured, fleet, persist=True):
     if persist:
         merge_into_fleet_file(fleet, ("tps_ema",), ids={d.get("id")})   # this node's learning only, not a stale snapshot
     push_report(d.get("id"), {"tps_ema": d["tps_ema"]})   # persist the learning to the single source of truth
+
+
+BW_ALPHA = 0.3        # D58: EMA weight for a fresh effective-bandwidth observation (as TPS_ALPHA)
+BW_MIN_TOKENS = 16    # a generation shorter than this is mostly overhead: too noisy to learn a card's speed from
+
+
+def card_bw(d):
+    """D58: a card's effective model-reading speed in GB/s (learned from real generations, or a bench), or None when
+    it has none yet. tokens/s x bytes-per-token: the same figure whichever model ran, so cards can be compared --
+    tps_ema / tokens_per_s_solo cannot (each was measured on whatever model happened to run)."""
+    v = d.get("bw_gbs") if d else None
+    return float(v) if v else None
+
+
+def observe_bw(node_id, gbs, fresh=False):
+    """Fold one effective-bandwidth measurement (GB/s) into node_id's EMA; fresh=True replaces it (a bench). Persists
+    locally and to the authority. Returns the new figure."""
+    if not node_id or not gbs or gbs <= 0:
+        return None
+    fleet = load_fleet()
+    d = next((x for x in fleet.get("donors", []) if x.get("id") == node_id), None)
+    if d is None:
+        return None
+    prev = None if fresh else d.get("bw_gbs")
+    d["bw_gbs"] = round(gbs if not prev else (1 - BW_ALPHA) * prev + BW_ALPHA * gbs, 1)
+    try:
+        merge_into_fleet_file(fleet, ("bw_gbs",), ids={node_id})
+    except Exception:
+        pass
+    push_report(node_id, {"bw_gbs": d["bw_gbs"]})
+    return d["bw_gbs"]
+
+
+def _learn_card_speed(base_url, timings, fresh=False):
+    """D58: llama-server reports its own generation speed with every answer (`timings`). When the warm server behind
+    base_url runs on ONE card, turn that into the card's GB/s and learn it. Returns (gbs, tokens/s) or None."""
+    try:
+        t = timings or {}
+        n = int(t.get("predicted_n") or 0)
+        tps = float(t.get("predicted_per_second") or 0)
+        if n < BW_MIN_TOKENS or tps <= 0:
+            return None
+        e = _entry_for_base(base_url)
+        if not e or len(e.get("nodes") or []) != 1:
+            return None                                # a model split over cards: the speed is not one card's
+        bpt = gguf_bytes_per_token(e["model"])
+        if not bpt:
+            return None
+        gbs = tps * bpt / 1e9
+        observe_bw(e["nodes"][0], gbs, fresh=fresh)
+        return gbs, tps
+    except Exception as ex:
+        print(f"[speed] could not learn a card's speed: {ex}", flush=True)
+        return None
 
 
 def eff_throughput(d):
@@ -6284,7 +6413,7 @@ def _mark_chosen(model_file):
     _pool_save()
 
 
-def warm_model(model_id, pooled=False, node=""):
+def warm_model(model_id, pooled=False, node="", chosen=True):
     """Explicitly pre-load a model into VRAM (Control Room 'Warm now'). Only SOLO-on-the-local-anchor models
     can be kept warm; one too big for a single node (needs pooling) can't. Returns (ok, note).
 
@@ -6350,7 +6479,8 @@ def warm_model(model_id, pooled=False, node=""):
         base = ensure_resident(idx[model_id]["path"], rpc_list, devices, weights, plan_nodes=nodes)
         if base is None:
             return False, f"failed to start the pooled warm server for {_tiny_model(model_id)} -- see poc/resident.log"
-        _mark_chosen(idx[model_id]["path"])
+        if chosen:
+            _mark_chosen(idx[model_id]["path"])
         return True, (f"warmed {_tiny_model(model_id)} across {', '.join(nodes)} -- it stays there until you unload it"
                       + (f" ({last_load_text()})" if last_load_text() else ""))
     if (rpc_list or len(nodes) != 1) and not same_box_solo:
@@ -6371,8 +6501,92 @@ def warm_model(model_id, pooled=False, node=""):
     base = ensure_resident(idx[model_id]["path"], rpc_list, devices, weights, plan_nodes=nodes)
     if base is None:
         return False, "failed to start the warm server"
-    _mark_chosen(idx[model_id]["path"])
+    if chosen:                                         # D58: a background warm for a faster box is not a choice
+        _mark_chosen(idx[model_id]["path"])
     return True, ("warmed" if not victims else f"warmed -- unloaded {', '.join(victims)} to make room on this card")
+
+BENCH_MODELS = ("Qwen2.5-14B-Instruct-Q4_K_M.gguf", CALIB_MODEL)   # D58: a dense model big enough to load the card;
+                                                                     # the small calibration model if a box lacks it
+BENCH_PROMPT = "Write one short paragraph about how a lighthouse works."
+
+
+def bench_card(node):
+    """D58: measure one card of THIS box (its own anchor or an eGPU here) in GB/s from a real generation, and set its
+    figure. Uses the model already warm on the card if there is one (nothing is pushed out); otherwise warms a bench
+    model there, measures, and unloads it again. Returns (ok, note)."""
+    by_id = {d["id"]: d for d in load_fleet().get("donors", [])}
+    card = by_id.get(node)
+    if card is None:
+        return False, f"no node {node} in the fleet"
+    if card.get("gpu_hold"):
+        return False, f"{node}'s GPU is in use by {card['gpu_hold']} -- not measured"
+    e = next((x for x in _pool_alive().values() if list(x.get("nodes") or []) == [node]), None)
+    loaded = None
+    if e is None:
+        idx = registry_index()
+        mid = next((m for m in BENCH_MODELS if m in idx), None)
+        if not mid:
+            return False, f"none of the bench models ({', '.join(BENCH_MODELS)}) is on this box's disk"
+        ok, note = warm_model(mid, node=node)
+        if not ok:
+            return False, f"could not warm {_tiny_model(mid)} on {node}: {note}"
+        loaded, e = mid, _pool_alive().get(idx[mid]["path"])
+        if e is None:
+            return False, f"{_tiny_model(mid)} did not stay warm on {node}"
+    base = f"http://{RESIDENT_HOST}:{e['port']}"
+    try:
+        body = json.dumps({"messages": [{"role": "user", "content": BENCH_PROMPT}], "max_tokens": 160,
+                           "temperature": 0}).encode("utf-8")
+        req = urllib.request.Request(base + "/v1/chat/completions", data=body, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=900) as r:
+            resp = json.loads(r.read().decode("utf-8"))
+        got = _learn_card_speed(base, resp.get("timings"), fresh=True)
+        if not got:
+            return False, f"{node}: the answer was too short to measure (timings: {resp.get('timings')})"
+        gbs, tps = got
+        return True, f"{node}: ~{gbs:.0f} GB/s ({tps:.1f} tokens/s on {_tiny_model(os.path.basename(e['model']))})"
+    except Exception as ex:
+        return False, f"{node}: the measurement failed: {ex}"
+    finally:
+        if loaded:
+            unload_model(loaded, why="bench done")
+
+
+_LOAD_SPEED_FILE = os.path.join(HERE, "load_speed.json")   # D58: {models folder: MB/s} learned from this box's loads
+
+
+def _learn_load_speed(model_file, elapsed_s):
+    """D58: a warm load from this box's own disk took elapsed_s: learn that folder's load speed (MB/s). A box can keep
+    models on very different disks (an internal NVMe at GB/s, a USB hard disk at ~50 MB/s), so it is per folder.
+    The time includes the server's start and warm-up, which only makes the figure cautious."""
+    try:
+        mb = os.path.getsize(model_file) / 1e6
+        if elapsed_s <= 0 or mb < 500:                    # a small model is mostly start-up time: not a disk figure
+            return
+        folder = os.path.dirname(os.path.abspath(model_file)).lower()
+        try:
+            sp = json.load(open(_LOAD_SPEED_FILE, encoding="utf-8"))
+        except Exception:
+            sp = {}
+        new = mb / elapsed_s
+        prev = sp.get(folder)
+        sp[folder] = round(new if not prev else 0.5 * prev + 0.5 * new, 1)
+        atomic_json_write(_LOAD_SPEED_FILE, sp, keep_backup=False)
+        print(f"[resident] load speed of {folder}: ~{sp[folder]:.0f} MB/s ({mb / 1024:.1f} GB in {elapsed_s:.0f} s)", flush=True)
+    except Exception as e:
+        print(f"[resident] could not learn the load speed: {e}", flush=True)
+
+
+def load_seconds(path, size_mb):
+    """D58: how long this box would take to load `path` cold, from what its folder has shown -- or None if that folder
+    has never been measured."""
+    try:
+        sp = json.load(open(_LOAD_SPEED_FILE, encoding="utf-8"))
+        v = sp.get(os.path.dirname(os.path.abspath(path)).lower())
+        return round(size_mb * 1.048576 / v) if v else None
+    except Exception:
+        return None
+
 
 def _resident_health(port, timeout=1.0):
     try:
@@ -6559,6 +6773,8 @@ def _await_resident(entry, logf, budget):
         if _resident_health(port):
             if owner:
                 _LAST_LOAD.clear(); _LAST_LOAD.update(_LOADING, elapsed_s=time.time() - _LOADING.get("started", time.time()))
+                if not shards:                                   # D58: a load from this box's own disk -- learn its folder's speed
+                    _learn_load_speed(model_file, _LAST_LOAD["elapsed_s"])
                 if _LOADING.get("measured"):
                     print(f"[resident] delivered {last_load_text()}", flush=True)
                 if shards:
@@ -7297,6 +7513,101 @@ def _delegate_target(name, fleet, model_mb):
     return nid, base, warm
 
 
+HANDOVER_MIN_RATIO = 2.0   # D58: hand a chat over only to a card at least this much faster (Michael, 2026-10-03)
+HANDOVER_MAX_LOAD_S = 60   # D58: ...and only if that box has it warm, or can load it from its disk within this
+_BG_WARM = {}              # (host base, model) -> when a background warm was asked for (one at a time, per 15 min)
+
+
+def _background_warm(base, node, name):
+    """D58: ask the host at `base` to warm `name` on its card `node`, without waiting -- so the NEXT chat for it can go
+    there warm. Not a chosen placement (`auto`): it can be evicted like any warm model. Returns False if one was asked
+    for in the last 15 minutes."""
+    key = (base, name)
+    if time.time() - _BG_WARM.get(key, 0) < 900:
+        return False
+    _BG_WARM[key] = time.time()
+    def _go():
+        try:
+            body = json.dumps({"action": "load", "model": name, "node": node, "auto": True}).encode("utf-8")
+            req = urllib.request.Request(base + "/residency", data=body,
+                                         headers={"Content-Type": "application/json", **_auth_headers()})
+            with urllib.request.urlopen(req, timeout=2400) as r:
+                print(f"[delegate] background warm of {name} on {node}: {json.loads(r.read().decode('utf-8')).get('note')}", flush=True)
+        except Exception as e:
+            print(f"[delegate] background warm of {name} on {node} failed: {e}", flush=True)
+    threading.Thread(target=_go, name="bg-warm", daemon=True).start()
+    return True
+
+
+def _faster_host(name, fleet, model_mb, here_node):
+    """D58: the plan runs `name` on this box's own card (`here_node`, or its eGPU). Is there another host whose box runs
+    it at least HANDOVER_MIN_RATIO x faster on ITS own card? Judged by each card's learned GB/s (card_bw) -- never on a
+    guess: no figure, no hand-over. The host must be up, Lend on (D35), its card free of a home service (D56), have the
+    file, have room, and not have to push out a BIGGER model someone keeps warm there (D45).
+    Returns (node_id, base_url, warm, ratio, here_gbs, there_gbs) or None; the reasons go to last_why."""
+    donors = fleet.get("donors", [])
+    here = next((d for d in donors if d.get("id") == here_node), None)
+    mine = card_bw(here)
+    why, cands = [], []
+    _req_set("bg_warm", "")
+    if not mine:
+        _req_set("last_why", [f"{here_node} has no speed figure yet (`fleet bench` measures every card)"])
+        return None
+    for d in donors:
+        if not d.get("local") or is_self_node(d) or not d.get("ip") or d.get("status") != "up":
+            continue
+        if d.get("lend") is False:
+            why.append(f"{d['id']}: lend off"); continue
+        # the cards in that host's box: its own anchor and any eGPU on the same address (D46) -- its planner picks the
+        # faster one that fits, so that is the card to compare against
+        box = [x for x in donors if x.get("ip") == d.get("ip") and x.get("status") == "up" and not x.get("gpu_hold")
+               and x.get("lend") is not False and card_bw(x) and best_case_mem_mb(x) >= model_mb]
+        if not box:
+            why.append(f"{d['id']}: no free card there with a speed figure that holds {_tiny_model(name)}"); continue
+        card = max(box, key=card_bw)
+        ratio = card_bw(card) / mine
+        if ratio < HANDOVER_MIN_RATIO:
+            why.append(f"{card['id']}: {ratio:.1f}x, under {HANDOVER_MIN_RATIO:g}x"); continue
+        base = f"http://{d['ip']}:{int(d.get('serve_port') or 8899)}"
+        warm = name in (d.get("warm") or [])
+        if not warm:
+            try:
+                reg = _remote_json(base + "/registry.json", ttl=2.0, timeout=4.0)
+            except Exception as e:
+                why.append(f"{d['id']}: no serve ({e})"); continue
+            models = {m.get("id"): m for m in reg.get("models") or []}
+            if name not in models:
+                why.append(f"{d['id']}: does not have {name} on its disk"); continue
+            pool = (reg.get("resident") or {}).get("pool") or []
+            if any(e.get("model") == name for e in pool):
+                warm = True
+            elif free_mem_mb(card) < model_mb:
+                bigger = [e.get("model") for e in pool
+                          if (models.get(os.path.basename(e.get("model") or "")) or {}).get("size_mb", 0) > model_mb]
+                if bigger:
+                    why.append(f"{d['id']}: would push out the bigger {_tiny_model(bigger[0])} kept warm there"); continue
+            if not warm:
+                # Not warm there: it would load from that box's disk first. A quick load (an internal SSD) is worth it now;
+                # a slow or unmeasured one (a USB hard disk: 17.7 GB took 6 minutes, 2026-10-03) is not, for THIS chat --
+                # answer here, and start it loading there so the next chat goes to the fast card.
+                load_s = (models.get(name) or {}).get("load_s")
+                if load_s is None or load_s > HANDOVER_MAX_LOAD_S:
+                    started = _background_warm(base, card["id"], name)
+                    took = (f"~{load_s / 60:.0f} min" if load_s >= 120 else f"~{load_s:.0f} s") if load_s else "an unmeasured time"
+                    _req_set("bg_warm", f"{card['id']} is about {ratio:.0f}x faster for {_tiny_model(name)}, but it would first "
+                                        f"load it from its disk ({took}) -- answering here; "
+                                        + ("it is loading there now, so the next chat goes there" if started
+                                           else "it is already loading there"))
+                    why.append(f"{d['id']}: not warm, and its load takes {took}"); continue
+        cands.append((-ratio, 0 if warm else 1, d["id"], base, warm, ratio, card_bw(card)))
+    if not cands:
+        _req_set("last_why", why)
+        return None
+    cands.sort()
+    _, _, nid, base, warm, ratio, theirs = cands[0]
+    return nid, base, warm, ratio, mine, theirs
+
+
 def pinned_alternative(name, requested_model, fleet):
     """D42: the goal's model is pinned out of this card (a fabric placement holds the memory, D39). A small answer must
     not die for that -- last night a warm 70B on the NUC 409'd every Open WebUI task call (titles, tags, follow-ups)
@@ -7445,6 +7756,7 @@ def _proxy_resident(base_url, data, stream):
         _req_set("proxy_message", m)
         _req_set("proxy_finish", ch.get("finish_reason") or ("tool_calls" if m.get("tool_calls") else "stop"))
         _req_set("proxy_usage", resp.get("usage"))
+        _learn_card_speed(base_url, resp.get("timings"))   # D58: every answer teaches its card's speed
         return msg, True
     def _gen():
         with _open() as r:
@@ -7457,6 +7769,8 @@ def _proxy_resident(base_url, data, stream):
                     break
                 try:
                     d = json.loads(p)
+                    if d.get("timings"):                         # the last chunk carries llama-server's own timings
+                        _learn_card_speed(base_url, d["timings"])   # D58
                     ch = d["choices"][0]
                     delta = dict(ch.get("delta", {}) or {})      # content, reasoning_content AND tool_calls (D31/D37)
                     if ch.get("finish_reason"):
@@ -7803,7 +8117,9 @@ def fabric_state(fleet, goal=None):
             n["gpu_hold"] = d.get("gpu_hold") or ""
             n["state"] = "DOWN" if not up else ("HELD" if d.get("gpu_hold") else "PINNED" if d.get("pinned") or _shard_held_mb(d) > 0 else ("IN" if in_plan else ("HELD" if held else ("AWAY" if d.get("away") else ("FOREIGN" if foreign else "IDLE")))))
             if up:
-                n["thrput"] = f"{donor_tps(d):.0f} t/s"
+                # D58: GB/s compares cards (the same figure whatever model ran); a bare t/s does not -- shown only until benched
+                n["thrput"] = f"~{card_bw(d):.0f} GB/s" if card_bw(d) else f"{donor_tps(d):.0f} t/s"
+                n["bw_gbs"] = card_bw(d)
                 n["free"] = f"{free_mem_mb(d)/1024:.1f} GB"
             if in_plan:
                 n["share"] = f"{free_mem_mb(d)/cap_tot*100:.0f}%"
@@ -8149,6 +8465,21 @@ def update_config(data):
     return c
 
 
+def update_own_config(data):
+    """Write THIS box's own keys (_HOST_OWN_KEYS) into its local config.json. Not through update_config: on a host,
+    load_config() is a merged view carrying the authority's settings, which must not be copied into the local file."""
+    try:
+        c = _load_json_resilient(CONFIG, what="config.json") or {}
+    except Exception:
+        c = {}
+    for k in _HOST_OWN_KEYS:
+        if k in data:
+            c[k] = data[k]
+    c["updated"] = datetime.datetime.now().isoformat(timespec="seconds")
+    atomic_json_write(CONFIG, c)
+    return c
+
+
 def config_text(c):
     """Tab-delimited config for surfaces with no JSON parser (the HEARTH TV). One record per line:
        GOAL\t<default_goal>            — the fleet default run-type
@@ -8176,6 +8507,7 @@ REPORTABLE = ("disk_free_gb", "disk_total_gb", "ram_free_mb", "ram_total_mb", "v
               "escalated",                        # of those, the ones a long chat asked for (D43): not a chosen layout
               "usb_mount", "usb_attached", "vram_total_mb", "app_version",
               "tps_ema", "tokens_per_s_solo",   # throughput learning persists to the authority too
+              "bw_gbs",                           # D58: a card's effective GB/s (comparable across models)
               "caps", "micprobe", "audiodevs", "voicetext",   # + text Samsung's voice-to-text fed our field
               "diskbench")   # measured USB write/read throughput (the TV-as-STORE re-benchmark)
 
@@ -8747,7 +9079,8 @@ def serve(fleet):
                     except Exception:
                         return int(m["size_mb"] * 1.1 + 512)
                 out = {"models": [{"id": m["id"], "size_mb": m["size_mb"], "kind": m["kind"], "warm_mb": _warm_mb(m),
-                                   "caps": m.get("caps") or {}, "caps_why": m.get("caps_why") or ""} for m in reg],
+                                   "caps": m.get("caps") or {}, "caps_why": m.get("caps_why") or "",
+                                   "load_s": load_seconds(m["path"], m["size_mb"])} for m in reg],   # D58: cold-load estimate
                        "goals": list(GOALS),
                        "goal_models": cfg.get("goal_models") or {},
                        "default_goal": cfg.get("default_goal", GOAL),
@@ -8957,6 +9290,19 @@ def serve(fleet):
                 self.send_response(400); self.end_headers(); self.wfile.write(b'{"ok":false,"err":"bad json"}'); return
             # D30: every fleet/config/HEARTH write belongs to the authority; a host relays it (and its outcome).
             # /residency and /v1 are about THIS box's GPU and are handled here.
+            if SERVE_MODE == "host" and path == "/config" and isinstance(data, dict) \
+                    and any(k in _HOST_OWN_KEYS for k in data):
+                # This box's own settings (its model folders, residency, warm context) are applied HERE. They used to
+                # be forwarded with the rest, so the authority set them on ITS config: a host's model folders could not
+                # be changed from its Control Room at all (2026-10-03). Fleet-wide keys still go to the authority.
+                update_own_config(data)
+                rest = {k: v for k, v in data.items() if k not in _HOST_OWN_KEYS}
+                if rest:
+                    _REMOTE_CACHE.clear()
+                    self.forward("POST", json.dumps(rest).encode("utf-8")); return
+                body = json.dumps({"ok": True, "config": public_config()}).encode("utf-8")
+                self.send_response(200); self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
             if SERVE_MODE == "host" and path in ("/report", "/reply", "/config", "/fleet"):
                 _REMOTE_CACHE.clear()                       # our next read must see the write
                 self.forward("POST", raw or b"{}"); return
@@ -9090,10 +9436,15 @@ def serve(fleet):
                 elif act == "unload":
                     stop_resident(); ok = True; result = {"ok": True, "note": "unloaded", "resident": resident_status()}
                 elif act == "load":
-                    ok, note = warm_model((data.get("model") or "").strip(), pooled=bool(data.get("pooled")), node=node)
+                    ok, note = warm_model((data.get("model") or "").strip(), pooled=bool(data.get("pooled")), node=node,
+                                          chosen=not data.get("auto"))
+                    result = {"ok": ok, "note": note, "resident": resident_status()}
+                elif act == "bench":                    # D58: measure this card's GB/s (its own anchor if no node)
+                    me_id = next((d.get("id") for d in load_fleet().get("donors", []) if d.get("local") and is_self_node(d)), "")
+                    ok, note = bench_card(node or me_id)
                     result = {"ok": ok, "note": note, "resident": resident_status()}
                 else:
-                    ok = False; result = {"ok": False, "note": "action must be 'load' or 'unload'"}
+                    ok = False; result = {"ok": False, "note": "action must be 'load', 'unload' or 'bench'"}
             elif path == "/formations":
                 act = (data.get("action") or "").strip(); name = (data.get("name") or "").strip()
                 if act == "save" and name:
@@ -9377,6 +9728,26 @@ def serve(fleet):
                                 with urllib.request.urlopen(req, timeout=1800) as r:
                                     out = r.read()
                             except urllib.error.HTTPError as e:          # the host's own answer (e.g. 503 "fetching the model, N min") -- relay it, don't crash
+                                code, out = e.code, e.read()
+                            self.send_response(code); self.send_header("Content-Type", "application/json")
+                            self.send_header("Access-Control-Allow-Origin", "*"); self.send_header("Content-Length", str(len(out)))
+                            self.end_headers(); self.wfile.write(out); return
+                    # D58: a box clearly faster for this model (its own card) takes the chat -- the stream path's rule, here too
+                    if len(nodes) == 1 and (not rpc_list or same_box_solo) and not self.headers.get(DELEGATED_HDR) \
+                            and not (_pool_alive().get(model_path()) or {}).get("chosen"):
+                        fh = _faster_host(os.path.basename(active_model()), load_fleet(), model_mem_mb(), nodes[0])
+                        if not fh and _req_get("bg_warm", ""):
+                            print(f"[v1] {_req_get('bg_warm')}", flush=True)
+                        if fh:
+                            nid, base, warm, ratio, here_gbs, there_gbs = fh
+                            print(f"[v1] handing to {nid}: {ratio:.1f}x faster ({there_gbs:.0f} vs {here_gbs:.0f} GB/s)", flush=True)
+                            body = json.dumps({**data, "stream": False}).encode("utf-8")
+                            req = urllib.request.Request(base + "/v1/chat/completions", data=body, headers=_delegate_headers())
+                            code = 200
+                            try:
+                                with urllib.request.urlopen(req, timeout=1800) as r:
+                                    out = r.read()
+                            except urllib.error.HTTPError as e:
                                 code, out = e.code, e.read()
                             self.send_response(code); self.send_header("Content-Type", "application/json")
                             self.send_header("Access-Control-Allow-Origin", "*"); self.send_header("Content-Length", str(len(out)))
@@ -9690,6 +10061,25 @@ def serve(fleet):
                         _delegate_stream(base, data, _raw)
                         log_run({"run_id": datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S") + "_v1delegated", "strategy": "v1_delegate",
                                  "goal": goal, "model": name, "live": [nid], "ok": True, "note": "warm" if warm else "cold-local"})
+                        return
+                # D58: the plan runs on this box's own card (or its eGPU). If another box runs this model at least
+                # HANDOVER_MIN_RATIO x faster on ITS own card, the chat goes there -- unless it was placed here on purpose.
+                if len(nodes) == 1 and (not rpc_list or same_box_solo) and not self.headers.get(DELEGATED_HDR) \
+                        and not (_pool_alive().get(model_path()) or {}).get("chosen"):
+                    fh = _faster_host(name, load_fleet(), model_mem_mb(), nodes[0])
+                    if not fh and _req_get("bg_warm", ""):
+                        think(f"  {_req_get('bg_warm')}\n")          # said, never a silent slow path
+                    if fh:
+                        nid, base_url, warm_there, ratio, here_gbs, there_gbs = fh
+                        think(f"  handing this to {nid} -- about {ratio:.0f}x faster for {_tiny_model(name)} "
+                              f"(~{there_gbs:.0f} GB/s there vs ~{here_gbs:.0f} GB/s on {nodes[0]}; "
+                              f"{'warm there' if warm_there else 'it loads there once, from its own disk'}). Its status follows:\n")
+                        def _raw(line):
+                            self.wfile.write(line.rstrip(b"\r\n") + b"\n\n"); self.wfile.flush()
+                        _delegate_stream(base_url, data, _raw)
+                        log_run({"run_id": datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S") + "_v1delegated", "strategy": "v1_delegate",
+                                 "goal": goal, "model": name, "live": [nid], "ok": True,
+                                 "note": f"faster host: {ratio:.1f}x ({there_gbs:.0f} vs {here_gbs:.0f} GB/s)"})
                         return
                 pooled_warm = bool((_pool_alive().get(model_path()) or {}).get("shards"))   # D39: kept warm across the fabric
                 use_resident = residency_enabled() and ((not rpc_list and len(nodes) == 1) or pooled_warm or same_box_solo)

@@ -17,6 +17,43 @@ Newest at top. See also [PROJECT_CHARTER.md](PROJECT_CHARTER.md), [README.md](RE
 
 ---
 
+## D58 — A chat goes to the box that runs its model clearly faster: cards compared in GB/s, loads in seconds (2026-10-03)
+**Context:** the planner's own-card rule (D9 addendum, 2026-09-13) runs a model on this box's card whenever it fits. It
+was written to stop a box driving a REMOTE card over RPC (the model re-sent, a round trip per token), but it also
+stopped the other, network-free option: handing the whole chat to a box that runs the model on ITS own card (D34).
+Measured 09-30: Qwen3-Coder-30B, 24.6k-token prompt -- the NUC's Arc 763 s to the first token and 4.7 tokens/s, the
+laptop's 5090 13.7 s and ~43 tokens/s. The maintainer chose the rules (10-03): hand over at **2x or faster**; the laptop takes
+hand-overs **unless Lend is off**; a model **warm on a slow card still moves**.
+
+**Decision 1 — compare cards in GB/s, not tokens/s.** The stored tokens/s figures came from whatever model ran (the
+5060 Ti "228 t/s" on a 1.5B, the 5090 "27 t/s" on a big one): useless for comparison. Generation is bound by memory
+speed, so tokens/s x the bytes read per token (from the GGUF's tensor table: every weight but the input embedding, and
+only `expert_used_count/expert_count` of a mixture-of-experts model's experts) is roughly the same figure whatever model
+ran. Every answer from a warm model on one card teaches that card (llama-server's own `timings`, EMA 0.3; answers under
+16 tokens are skipped); `fleet bench` sets every GPU's figure in a few minutes (the model warm there, or Qwen2.5-14B
+loaded and unloaded). Measured 10-03: Arc ~50, 5060 Ti ~353, laptop 5090 ~537 GB/s. Approximate: a mixture-of-experts
+model uses a card's bandwidth less well than a dense one, and the figure averages both (the 5090 read 384-537 across
+the day) -- the ratios (8-11x Arc vs 5090; 1.1-1.5x 5060 Ti vs 5090) stayed on the right side of 2x.
+
+**Decision 2 — the hand-over rule.** When the plan runs a model on this box's own card (or its eGPU) and the request
+was not itself handed over, compare with every other host's box (its anchor and any eGPU there) that is up, Lend on, not
+held by a home service, has the file, has room, and would not push out a bigger model kept warm there. A card at least
+2x faster takes the chat. No figure, no hand-over (never on a guess). A model the operator placed on this card (D57) stays.
+
+**Decision 3 — a load counts.** Handed over cold, the model first loads from the other box's disk; the laptop's models
+sat on a USB hard disk (~47 MB/s), and a 17.7 GB model took 370 s -- a short question lost to answering on the Arc. Each
+box now learns each model folder's load speed from its own loads (`poc/load_speed.json`) and its registry estimates
+`load_s` per model. A cold hand-over happens only within 60 s; slower or unmeasured, the chat is answered here and the
+faster box loads the model in the background (not a chosen placement) so the next chat goes there warm. Measured: the
+same model from the laptop's internal SSD loads in ~3 s (1,286 MB/s) -- handed over cold, answered in 15 s.
+
+**Decision 4 — models live where they run.** The authority keeps the library; a fast host keeps the few models it
+should run on fast local storage (the laptop: `D:\GENGHIS-models`, its NVMe). A host's own settings (`models_dirs`,
+`residency`, `resident_ctx`, `resident_kv`) are now set ON the host by `POST /config`; they used to be forwarded to the
+authority with everything else, so a host's model folders could not be changed from its Control Room.
+
+---
+
 ## D57 — A model placed on a card is planned for THAT card (2026-10-03)
 **Context:** the maintainer: *"Can you fix Genghis so that I can put the 14B Coder back on the NUC/5060ti? It no longer works."*
 and *"I have plenty of room for it on the NUC's Intel ARC, that doesn't do it either."* Since D46 (when the 5060 Ti

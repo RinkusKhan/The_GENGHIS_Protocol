@@ -123,9 +123,11 @@ Qwen3-Coder-30B-A3B (a mixture-of-experts model, ~17.7 GB at Q4) on one 24 GB GP
 green, the result identical to the original code; Qwen2.5-Coder-14B fixed one of the two. A 24.6k-token prompt: ~14 s to
 the first token, then ~43 tokens/s on that GPU. Give it small, precise tasks: a vague one gets a confident wrong edit.
 
-**Point it at the host with the fastest card for the model.** Today a host runs any model that fits its own card there,
-even when another host holds it on a far faster one: the same 30B prompt took 763 s to the first token on an Intel Arc
-iGPU. Until the planner hands such a request over (planned), aim the agent at the host whose card you want.
+**Any host will do; the fast card answers (D58).** A host hands the chat to a box whose card runs the model at least
+twice as fast, if it is warm there or loads there within a minute; otherwise it answers itself and starts the model
+loading on the faster box for the next request. The same 30B prompt took 763 s to the first token on an Intel Arc iGPU
+and 13.7 s on a 5090. Keep the models you use on the fast box's internal SSD: from a USB hard disk the first load of a
+17.7 GB model took 6 minutes, from the SSD 3 seconds. Pointing the agent straight at the fast host still saves a hop.
 
 ## Say what you want done — roles (D48–D50)
 > **Experimental — what to expect today.** Roles sit on top of the proven core (pooling, placement, the `/v1` API), and

@@ -4,6 +4,15 @@ _What changed and when. **Why** lives in [DECISIONS.md](DECISIONS.md) (D-numbers
 STATUS.md. Newest first. Dates are the day the change landed on `main`._
 
 ## 2026-10-03
+- **D58 — a chat goes to the box that runs its model clearly faster.** A box used to run any model that fit its own
+  card there, even when another box ran it far faster on its own (Qwen3-Coder-30B: 763 s to the first token on an Intel
+  Arc iGPU, 13.7 s on a 5090). Now a box hands the chat to a host whose card is at least 2x faster, judged by each card's
+  measured GB/s, a figure that compares cards whatever model ran (tokens/s x bytes read per token). Every answer refines
+  it; `fleet bench` measures every GPU at once; the Fleet table shows it. A cold hand-over happens only if that box loads
+  the model within 60 s (each box learns its folders' load speed); otherwise the chat is answered here and the faster
+  box loads it in the background for the next one. Lend off keeps a GPU out; a model placed on a card stays there.
+- **A host's own settings are set on the host.** `models_dirs`, `residency`, `resident_ctx` and `resident_kv` sent to
+  a host's `POST /config` used to be forwarded to the authority and set there instead.
 - **Fix: a model could not be placed on a chosen card of a box with two GPUs (D57).** Since an eGPU joined a box's own
   card (D46), putting a model on either card from the Control Room or a formation failed with "too big for this host's
   card (needs ~11 GB, ~21 GB usable)". The request was planned for the whole box (which picked the faster eGPU over

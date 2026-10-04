@@ -76,3 +76,4 @@ poc/caps.json.tmp
 
 # the lab's own snapshots live in the private home repo (D22/D36), never in the shipping tree
 backups/
+poc/load_speed.json

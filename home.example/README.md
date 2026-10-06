@@ -32,9 +32,9 @@ Call a role from any OpenAI-compatible client by name: `genghis-researcher`, `ge
 | `id` | lowercase; becomes `genghis-<id>`. Cannot be an effort goal name. |
 | `name`, `description` | what a human sees in a model dropdown |
 | `goal` | `fastest` · `balanced` · `fit` · `biggest` — which tier picks the model |
-| `prefer` | *optional* the model files this role is best at, in order. The first one the library holds that meets `requires` runs; if none can, the `goal` picks, and the reply says why. Softer than `model`. |
+| `prefer` | *optional* the model files this role is best at, in order. The first one the library holds that meets `requires` runs; if none can, the `goal` picks, and the reply says why. Softer than `model`. A listed model that no awake, lent GPU with its own memory (150 GB/s or more, measured) can hold on one card right now is passed over for a later one that can: list the big model first and the always-on one after it, and the big one runs whenever its box is awake. |
 | `think` | *optional* `true`/`false`: whether a reasoning model thinks before answering in this role. Unset = the model's default from config `thinking`. |
-| `max_tokens` | *optional* this role's answer budget when the chat client names none; may go above the usual 4,096 ceiling, up to 16,384. A role that thinks needs it: a Researcher thinking through two sources used ~2,800 tokens before answering. |
+| `max_tokens` | *optional* this role's answer budget when the chat client names none (otherwise 8,192); at most 16,384. A role that thinks needs it: a Researcher thinking through two sources used ~2,800 tokens before answering. |
 | `model` | *optional* hard pin to one GGUF. Honoured even if it falls short (you are told). |
 | `requires` | capabilities the role needs; GENGHIS checks them against the model and **refuses out loud** rather than half-working |
 | `system` / `system_file` | the system prompt, inline or in a neighbouring file |

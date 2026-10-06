@@ -116,9 +116,13 @@ PROMPT    = "In two sentences, describe what a coordinator does in a distributed
 N_PREDICT = 64     # the CLI benchmark budget (run/calibrate) -- NOT the chat default, see V1_MAX_TOKENS
 # /v1 chat budget when the client sends no max_tokens (Open WebUI doesn't): a real answer, not a benchmark
 # snippet. Found the day the always-on chat first got a "tell me about X" -- it stopped mid-sentence at 64.
-V1_MAX_TOKENS = int(os.environ.get("GENGHIS_V1_MAX_TOKENS", "2048"))
+# 8,192 since 2026-10-06: at 2,048 a coding answer that rewrote a few functions was cut off mid-file (Aider sends no
+# max_tokens either), and the person saw "hit a token limit" with no idea it was ours.
+V1_MAX_TOKENS = int(os.environ.get("GENGHIS_V1_MAX_TOKENS", "8192"))
 TOOL_LOOP_LIMIT = int(os.environ.get("GENGHIS_TOOL_LOOP_LIMIT", "3"))   # the same tool call this many times in a row = a loop
-V1_HARD_MAX_TOKENS = int(os.environ.get("GENGHIS_V1_HARD_MAX_TOKENS", "4096"))
+# The most any client may ask for. 16,384 = ROLE_MAX_TOKENS: a coding tool that asks for 8,192 gets 8,192 (it was 4,096).
+# Still a ceiling, so a looping model can't hold the host's run lock forever (the 1.5B that ran 12,000+ tokens, 2026-09-16).
+V1_HARD_MAX_TOKENS = int(os.environ.get("GENGHIS_V1_HARD_MAX_TOKENS", "16384"))
 ROLE_MAX_TOKENS = 16384                                  # the most a role's own `max_tokens` may ask for (thinking + answer)   # the ceiling even when a client asks for more
 N_CTX     = 4096   # bounded context. KV cache scales with this; the DEFAULT (huge) context
                    # caused the 32B OOM in Run #5. Bounding it shrinks the KV footprint.
@@ -1493,6 +1497,36 @@ def role_unmet(role, caps):
     return bad
 
 
+FAST_CARD_GBS = 150   # a card with its own memory: a 5060 Ti measures ~210-350 GB/s, a laptop 5090 ~330-540. An iGPU
+                      # sharing the box's RAM (the NUC's Arc, ~40-50) or a CPU is below it -- it can hold a 17 GB model and take
+                      # 763 s to the first token (2026-09-30).
+
+def _fast_card_holds(size_mb):
+    """Is there, right now, one fast card (FAST_CARD_GBS, measured) on an awake box that could hold a model this size on
+    its own? This box's cards count whatever its Lend switch says; another box's only with Lend on (D35) and no home
+    service holding its GPU (D56). Judged against the card's total, not what it has free this second: a warm model
+    there is moved aside by the planner as usual. No fleet record = not judged (True)."""
+    try:
+        donors = load_fleet().get("donors", [])
+    except Exception:
+        return True
+    if not donors:
+        return True
+    me = [d for d in donors if d.get("local") and is_self_node(d)]
+    my_ip = (me[0].get("ip") if me else None)
+    for x in donors:
+        if x.get("status") != "up" or x.get("gpu_hold") or x.get("accelerator") not in ("cuda", "vulkan"):
+            continue
+        mine = is_self_node(x) or (my_ip and x.get("ip") == my_ip)
+        host = mine or any(d.get("local") and d.get("ip") and d.get("ip") == x.get("ip") and d.get("status") == "up"
+                           for d in donors)            # a card counts only on a box that runs a serve (answers chats)
+        if not host or (not mine and x.get("lend") is False):
+            continue
+        if (card_bw(x) or 0) >= FAST_CARD_GBS and best_case_mem_mb(x) >= size_mb + 512:
+            return True
+    return False
+
+
 def resolve_role(rid):
     """A role id -> what it will ACTUALLY run, and why.
 
@@ -1521,7 +1555,7 @@ def resolve_role(rid):
         return out
 
     if role.get("prefer"):
-        skipped = []
+        skipped, slow_first = [], None
         for mid in role["prefer"]:
             m = idx.get(mid)
             if not m:
@@ -1531,9 +1565,21 @@ def resolve_role(rid):
             if bad:
                 skipped.append(f"{mid} " + "; ".join(bad))
                 continue
+            if not _fast_card_holds(m.get("size_mb") or 0):
+                # The order is a wish list: the 30B Coder while the laptop's 5090 is awake, the 14B on the NUC's 5060 Ti
+                # when it isn't (2026-10-06). A model no fast card can hold right now would run on an iGPU or split
+                # (minutes to the first word), so a LATER preference that runs well wins -- and if none does, this one.
+                skipped.append(f"{mid}: no awake card fast enough holds it right now")
+                slow_first = slow_first or m
+                continue
             out["model_id"], out["path"], out["via"] = m["id"], m["path"], "prefer"
             if skipped:
                 out["prefer_note"] = "skipped " + " / ".join(skipped)
+            return out
+        if slow_first:
+            out["model_id"], out["path"], out["via"] = slow_first["id"], slow_first["path"], "prefer"
+            out["prefer_note"] = ("no preferred model has a fast card free right now, so the first that can run at all "
+                                  "is used: " + " / ".join(skipped))
             return out
         out["prefer_note"] = ("none of its preferred models can run here (" + " / ".join(skipped) +
                               f"), so the '{role['goal']}' goal chose")
@@ -10135,7 +10181,23 @@ def serve(fleet):
                         think(f"  still on the fabric window (this conversation is ~{conv_tok} tokens; this card alone holds {_solo_fit_ctx(model_path())})\n")
                     elif esc_now:
                         think(f"  dropping back to this card alone -- the conversation fits here again (~{conv_tok} tokens); reloading\n")
-                    base = with_ticks("loading" if not already else "activating", lambda: ensure_resident(model_path(), rpc_list, devices, weights, plan_nodes=nodes, conv_tokens=conv_tok))
+                    # Room for the ANSWER as well as the question. The window used to grow only when the question alone
+                    # overflowed it (ContextTooSmall, below), so a 15.5k-token Aider request in a fresh 16k window had under
+                    # 1k tokens left to answer in, and stopped mid-file (2026-10-06). Grown once, on this card alone, only
+                    # when the reload would really give a bigger window (the same check as D32's growth below).
+                    _grow = 0
+                    if not rpc_list:
+                        _cur = int((_pool_alive().get(model_path()) or {}).get("ctx") or 0)
+                        _want_tok = conv_tok + int(n or 0) + 256
+                        if _cur and _want_tok > _cur:
+                            _w, _f = resident_ctx(model_path(), _local_anchor_free_mb(), need=_want_tok)
+                            if _w > _cur:
+                                _grow = _want_tok
+                                think(f"  this question (~{conv_tok} tokens) plus a {n}-token answer needs more than the warm "
+                                      f"server's {_cur}; reloading with a {_w}-token context (one-time)\n")
+                        elif not _cur:
+                            _grow = _want_tok                         # a fresh load: sized for question + answer from the start
+                    base = with_ticks("loading" if not already else "activating", lambda: ensure_resident(model_path(), rpc_list, devices, weights, plan_nodes=nodes, conv_tokens=conv_tok, need_ctx=_grow))
                     if base is None and _resident.get("pinned_by") and not self.headers.get(DELEGATED_HDR):
                         alt = pinned_alternative(name, data.get("model"), load_fleet())            # D42
                         if alt and alt[0] == "delegate":
@@ -10244,6 +10306,11 @@ def serve(fleet):
                 sse({**b, "genghis": {"nodes": nodes, "goal": goal, "model_file": name, "resident": False},
                      "choices": [{"index": 0, "finish_reason": None, "delta": {}}]})
                 _ctx, _need, _fit = _v1_ctx(rpc_list, devices, n, prompt)
+                _room = _fit - (_need - n)                    # what the cards can hold for the answer once the prompt is in
+                if _need > _ctx and _room >= 1024:            # the answer budget (8,192 by default) must not turn a short chat
+                    n = data["max_tokens"] = _room            # into a refusal on a tight split: shorten the budget instead
+                    think(f"  answer budget {n} tokens (what {' + '.join(nodes)} can hold beside this prompt)\n")
+                    _ctx, _need, _fit = _v1_ctx(rpc_list, devices, n, prompt)
                 if _need > _ctx:                              # say it in words, before a 20 GB load that would end in the engine's error
                     delta(content=(f"[genghis] This request is about {_need} tokens, but split across {' + '.join(nodes)} "
                                    f"{name} can hold at most {_fit} right now -- the other models loaded on those cards are "

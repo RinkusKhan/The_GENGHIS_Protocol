@@ -3,6 +3,23 @@
 _What changed and when. **Why** lives in [DECISIONS.md](DECISIONS.md) (D-numbers); **where we are** in
 STATUS.md. Newest first. Dates are the day the change landed on `main`._
 
+## 2026-10-06
+- **Longer answers: 8,192 tokens by default, up to 16,384 when a client asks.** A coding answer from Aider (which, like
+  Open WebUI, names no `max_tokens`) was cut off at 2,048 tokens mid-edit, and a client that asked for more was held to
+  4,096. Now a chat that names no budget gets 8,192 and a client may ask for up to 16,384 (`GENGHIS_V1_MAX_TOKENS`,
+  `GENGHIS_V1_HARD_MAX_TOKENS`). Checked on the 30B Coder: 6.5-7.5k-token answers finish on their own, in about 50 s on a
+  5090, asked directly or through the authority. A model split across boxes whose cards can't hold the full budget beside
+  the prompt gets a shorter one (said in the status line) instead of a refusal.
+- **A warm model's window fits the question AND the answer.** It used to grow only when the question alone overflowed
+  it, so a 15.5k-token Aider request in a fresh 16k window had under 1k tokens left to answer in. Now a warm server is
+  reloaded once to a window that holds question + answer budget (only when the card has room for a bigger one; said in
+  the status line), and a fresh load is sized for both from the start. Checked: a ~15.9k-token request into a warm 16k
+  window reloaded at 32k and answered 8k tokens.
+- **A role's `prefer` list skips a model no fast card can hold right now.** The Coder now prefers Qwen3-Coder-30B (runs
+  on the laptop's 5090) and falls back to Qwen2.5-Coder-14B (the NUC's 5060 Ti) when the laptop is off, its GPU is held
+  by a home service, or Lend is off. "Fast" = a measured 150 GB/s or more on one card: the NUC's Arc can hold the 30B
+  but takes minutes to the first word. If no preferred model has a fast card, the first one that can run at all is used.
+
 ## 2026-10-03
 - **D58 — a chat goes to the box that runs its model clearly faster.** A box used to run any model that fit its own
   card there, even when another box ran it far faster on its own (Qwen3-Coder-30B: 763 s to the first token on an Intel

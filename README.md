@@ -287,4 +287,4 @@ self-healing. Full guides: [`INSTALL.md`](INSTALL.md) · [`USAGE.md`](USAGE.md) 
 
 Licensed under the **[Apache License 2.0](LICENSE)** — permissive, with an explicit patent grant. See [`NOTICE`](NOTICE). "GENGHIS" and "The GENGHIS Protocol" are reserved names of the project; the license covers the code, not the name.
 
-© 2026 Michael B. Rinkus. Built with **Subutai**, his AI engineering partner. Builds on [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT), invoked over RPC.
+© 2026 Michael B. Rinkus. Built with **[Subutai](https://github.com/subutai-baatur)**, his AI engineering partner. Builds on [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT), invoked over RPC.
